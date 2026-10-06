@@ -10,6 +10,11 @@ tasks:
     cmds:
       - rm -f bin/smith
 
+  clean-home:
+    desc: remove the .smith dir in the home directory
+    cmds:
+      - rm -rf ~/.smith
+
   build:
     desc: "Build the smith CLI to bin/smith"
     deps: [clean]
