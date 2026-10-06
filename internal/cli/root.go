@@ -5,6 +5,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -43,6 +44,13 @@ namespace's projects. See "smith help" for the full grammar.`,
 		newListCmd(),
 	)
 	return root
+}
+
+// stdout is where normal command output goes. cobra's own Print* helpers
+// default to stderr (since v1.9); smith writes informational output to
+// stdout so it can be piped or redirected.
+func stdout(cmd *cobra.Command) io.Writer {
+	return cmd.OutOrStdout()
 }
 
 // dispatch handles invocations that did not match a subcommand: known

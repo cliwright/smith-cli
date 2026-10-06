@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,6 @@ func isNamespace(arg string) bool {
 // namespace, list targets for one project, or run a target. All of that
 // arrives later; for now it prints a stub.
 func runNamespace(cmd *cobra.Command, args []string) error {
-	cmd.Printf("namespace dispatch: %s (not implemented)\n", strings.Join(args, " "))
+	fmt.Fprintf(stdout(cmd), "namespace dispatch: %s (not implemented)\n", strings.Join(args, " "))
 	return nil
 }

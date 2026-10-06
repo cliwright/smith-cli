@@ -43,7 +43,8 @@ func newInitCmd() *cobra.Command {
 Creates .smith/repo.yml (repository configuration), .smith/lock.json (empty,
 ready to commit), and the ~/.smith cache root for fetched project types.
 If the directory is already initialized, does nothing.`,
-		Args: cobra.NoArgs,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runInit(cmd)
 		},
@@ -61,7 +62,7 @@ func runInit(cmd *cobra.Command) error {
 	lockJSON := filepath.Join(smithDir, lockJSONName)
 
 	if _, err := os.Stat(repoYML); err == nil {
-		cmd.Printf("%s is already a Smith repository (%s exists). Nothing to do.\n",
+		fmt.Fprintf(stdout(cmd), "%s is already a Smith repository (%s exists). Nothing to do.\n",
 			cwd, filepath.Join(cacheDirName, repoYMLName))
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -93,15 +94,16 @@ func runInit(cmd *cobra.Command) error {
 		return fmt.Errorf("self-check after init: %w", err)
 	}
 
-	cmd.Printf("Initialized Smith repository %q\n\n", repoName)
-	cmd.Println("Created:")
-	cmd.Printf("  %s    repository configuration\n", filepath.Join(cacheDirName, repoYMLName))
-	cmd.Printf("  %s   lock file (nothing pinned until the first sync)\n", filepath.Join(cacheDirName, lockJSONName))
-	cmd.Printf("  %s   global cache root for project types\n", cacheRoot)
-	cmd.Println()
-	cmd.Println("Next steps:")
-	cmd.Println("  - commit .smith/ so everyone shares this configuration")
-	cmd.Println("  - run smith sync when you need project types")
+	out := stdout(cmd)
+	fmt.Fprintf(out, "Initialized Smith repository %q\n\n", repoName)
+	fmt.Fprintln(out, "Created:")
+	fmt.Fprintf(out, "  %s    repository configuration\n", filepath.Join(cacheDirName, repoYMLName))
+	fmt.Fprintf(out, "  %s   lock file (nothing pinned until the first sync)\n", filepath.Join(cacheDirName, lockJSONName))
+	fmt.Fprintf(out, "  %s   global cache root for project types\n", cacheRoot)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Next steps:")
+	fmt.Fprintln(out, "  - commit .smith/ so everyone shares this configuration")
+	fmt.Fprintln(out, "  - run smith sync when you need project types")
 	return nil
 }
 

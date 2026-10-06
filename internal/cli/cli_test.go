@@ -31,9 +31,10 @@ func TestRootHelpListsCommandTree(t *testing.T) {
 }
 
 func TestSubcommandStubs(t *testing.T) {
-	// init is implemented (see init_test.go) and must not scribble into the
-	// package directory, so it is not in this list.
-	for _, cmd := range []string{"new", "sync", "types", "doctor", "tree", "list"} {
+	// init and tree are implemented (see init_test.go and tree_test.go) and
+	// must not run against the package directory, so they are not in this
+	// list.
+	for _, cmd := range []string{"new", "sync", "types", "doctor", "list"} {
 		t.Run(cmd, func(t *testing.T) {
 			out, err := run(t, cmd)
 			if err != nil {
@@ -83,9 +84,9 @@ func TestParallelFlag(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"--parallel", "4", "tree"})
+	cmd.SetArgs([]string{"--parallel", "4", "list"})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("--parallel 4 tree: %v", err)
+		t.Fatalf("--parallel 4 list: %v", err)
 	}
 	n, err := cmd.Flags().GetInt("parallel")
 	if err != nil {
