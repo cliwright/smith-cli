@@ -28,6 +28,9 @@ go.work.sum
 # env file
 .env
 
+# Built binary (task build) — safe to add bin/ to PATH
+/bin/
+
 # Editor/IDE
 # .idea/
 # .vscode/

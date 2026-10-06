@@ -5,15 +5,27 @@ tasks:
     cmds:
       - task --list
 
-  build:
-    desc: Build the smith CLI
+  clean:
+    desc: Remove existing binary from bin dir
     cmds:
-      - go build ./...
+      - rm bin/smith
+
+  build:
+    desc: "Build the smith CLI to bin/smith"
+    deps: [clean]
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/smith ./cmd/smith
 
   test:
     desc: Run Go tests
     cmds:
       - go test ./...
+
+  run:
+    desc: Run the smith CLI (pass args after --)
+    cmds:
+      - go run ./cmd/smith {{.CLI_ARGS}}
 
   lint:
     desc: Run go vet
