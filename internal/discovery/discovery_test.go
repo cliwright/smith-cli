@@ -51,6 +51,26 @@ func writeManifest(t *testing.T, dir, name, typ string) {
 	}
 }
 
+// writeManifestWithDeps writes a minimal valid smith.yml with the given
+// sugar-form dependencies.
+func writeManifestWithDeps(t *testing.T, dir, name, typ string, deps ...string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var dependsOn strings.Builder
+	if len(deps) > 0 {
+		dependsOn.WriteString("depends_on:\n")
+		for _, dep := range deps {
+			fmt.Fprintf(&dependsOn, "  - %s\n", dep)
+		}
+	}
+	content := fmt.Sprintf("version: 1\nname: %s\ntype: %s\n%s", name, typ, dependsOn.String())
+	if err := os.WriteFile(filepath.Join(dir, "smith.yml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func projectDirs(projects []Project) []string {
 	dirs := make([]string, len(projects))
 	for i, p := range projects {
@@ -196,6 +216,22 @@ func TestFindProjects(t *testing.T) {
 				}
 			},
 			want: []string{},
+		},
+		{
+			name:  "dangling dependency names project and missing dependency",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "spam"), "spam", "python/astral/service@2", "auth")
+			},
+			wantErr: `libs/spam/smith.yml: dependency "auth" does not match any project`,
+		},
+		{
+			name:  "self dependency is rejected",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "spam"), "spam", "python/astral/service@2", "spam")
+			},
+			wantErr: `libs/spam/smith.yml: project "spam" must not depend on itself`,
 		},
 	}
 

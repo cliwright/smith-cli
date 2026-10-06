@@ -12,21 +12,30 @@ import (
 
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/manifest"
 )
 
 func newTreeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "tree",
 		Short: "Print the discovered project tree",
 		Long: `Print the discovered project tree: every smith.yml found by
-traversing the declared workspace.project_roots, annotated with project name
-and type. Output is sorted alphabetically.`,
+traversing the declared workspace.project_roots, projects annotated with
+(type), or (type -> deps) when they have dependencies. Output is sorted
+alphabetically.
+
+With --show-deps, a Dependencies section after the tree spells out every
+depends_on entry with its explicit targets, including defaults (a sugar
+dependency renders as "build → build").`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runTree(cmd)
 		},
 	}
+	cmd.Flags().Bool("show-deps", false,
+		"after the tree, list every depends_on entry with its explicit targets (including defaults)")
+	return cmd
 }
 
 func runTree(cmd *cobra.Command) error {
@@ -46,7 +55,17 @@ func runTree(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return renderTree(cmd.OutOrStdout(), filepath.Base(repoRoot), cfg, projects)
+	if err := renderTree(stdout(cmd), filepath.Base(repoRoot), cfg, projects); err != nil {
+		return err
+	}
+	showDeps, err := cmd.Flags().GetBool("show-deps")
+	if err != nil {
+		return err
+	}
+	if showDeps {
+		renderDeps(stdout(cmd), projects)
+	}
+	return nil
 }
 
 // treeNode is one directory in the rendered tree. project is set when the
@@ -119,10 +138,84 @@ func renderChildren(w io.Writer, parent *treeNode, prefix string) {
 		}
 		line := prefix + connector + child.name
 		if child.project != nil {
-			annotation := fmt.Sprintf("(%s · %s)", child.project.Manifest.Name, child.project.Manifest.Type)
+			annotation := annotation(child.project.Manifest)
 			line += strings.Repeat(" ", maxLen-len(child.name)+3) + annotation
 		}
 		fmt.Fprintln(w, line)
 		renderChildren(w, child, childPrefix)
+	}
+}
+
+// annotation renders a project's parenthesized type annotation, with a
+// sorted, deduplicated "-> a, b" dependency suffix inside the parens when
+// the project has dependencies. The annotation uses the ASCII arrow; the
+// --show-deps footer keeps its own arrow.
+func annotation(m *manifest.Manifest) string {
+	inner := m.Type
+	if deps := depNames(m); len(deps) > 0 {
+		inner += " -> " + strings.Join(deps, ", ")
+	}
+	return "(" + inner + ")"
+}
+
+// depNames returns the distinct dependency project names of a manifest,
+// sorted for deterministic output.
+func depNames(m *manifest.Manifest) []string {
+	seen := map[string]bool{}
+	for _, d := range m.DependsOn {
+		seen[d.Project] = true
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// depEdge is one depends_on entry rendered by renderDeps: project depends on
+// dep, with dep's targets running before the given local targets.
+type depEdge struct {
+	project, dep, targets, before string
+}
+
+// renderDeps spells out every depends_on entry of every project, one line per
+// entry — including defaults, so a sugar dependency renders as "build →
+// build". Entries are sorted by project, dependency, and targets, and the
+// section is omitted entirely when the repo has no dependencies. Unlike the
+// tree annotation, duplicate edges are NOT merged: --show-deps exists to show
+// them distinctly.
+func renderDeps(w io.Writer, projects []discovery.Project) {
+	var edges []depEdge
+	for _, p := range projects {
+		for _, d := range p.Manifest.DependsOn {
+			edges = append(edges, depEdge{
+				project: p.Manifest.Name,
+				dep:     d.Project,
+				targets: strings.Join(d.Targets, ", "),
+				before:  strings.Join(d.Before, ", "),
+			})
+		}
+	}
+	if len(edges) == 0 {
+		return
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].project != edges[j].project {
+			return edges[i].project < edges[j].project
+		}
+		if edges[i].dep != edges[j].dep {
+			return edges[i].dep < edges[j].dep
+		}
+		if edges[i].targets != edges[j].targets {
+			return edges[i].targets < edges[j].targets
+		}
+		return edges[i].before < edges[j].before
+	})
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Dependencies:")
+	for _, e := range edges {
+		fmt.Fprintf(w, "  %s → %s   %s → %s\n", e.project, e.dep, e.targets, e.before)
 	}
 }

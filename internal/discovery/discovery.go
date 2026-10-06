@@ -128,5 +128,30 @@ func FindProjects(repoRoot string, cfg *config.RepoConfig) ([]Project, error) {
 	}
 
 	sort.Slice(projects, func(i, j int) bool { return projects[i].Dir < projects[j].Dir })
+	if err := validateDependencies(projects); err != nil {
+		return nil, err
+	}
 	return projects, nil
+}
+
+// validateDependencies checks every project's depends_on entries against the
+// discovered projects: no dangling references, no self-dependencies. projects
+// must be sorted so the first error reported is deterministic.
+func validateDependencies(projects []Project) error {
+	names := make(map[string]bool, len(projects))
+	for _, p := range projects {
+		names[p.Manifest.Name] = true
+	}
+	for _, p := range projects {
+		manifestPath := filepath.ToSlash(filepath.Join(p.Dir, "smith.yml"))
+		for _, dep := range p.Manifest.DependsOn {
+			if dep.Project == p.Manifest.Name {
+				return fmt.Errorf("%s: project %q must not depend on itself", manifestPath, p.Manifest.Name)
+			}
+			if !names[dep.Project] {
+				return fmt.Errorf("%s: dependency %q does not match any project in this repository", manifestPath, dep.Project)
+			}
+		}
+	}
+	return nil
 }

@@ -20,6 +20,24 @@ func project(dir, name, typ string) discovery.Project {
 	}
 }
 
+// projectWithDeps builds a project whose manifest declares the given
+// dependencies in sugar form — including the [build] defaults that
+// manifest.Load fills in (defaultTarget is unexported there).
+func projectWithDeps(dir, name, typ string, deps ...string) discovery.Project {
+	dependsOn := make([]manifest.Dependency, len(deps))
+	for i, dep := range deps {
+		dependsOn[i] = manifest.Dependency{
+			Project: dep,
+			Targets: []string{"build"},
+			Before:  []string{"build"},
+		}
+	}
+	return discovery.Project{
+		Dir:      dir,
+		Manifest: &manifest.Manifest{Name: name, Type: typ, DependsOn: dependsOn},
+	}
+}
+
 func TestRenderTree(t *testing.T) {
 	cfg := &config.RepoConfig{
 		Workspace: config.Workspace{ProjectRoots: []string{"libs", "services", "tools"}},
@@ -37,12 +55,76 @@ func TestRenderTree(t *testing.T) {
 
 	want := `smith-test-repo
 ├── libs
-│   └── my-lib   (my-lib · python/astral/lib@1)
+│   └── my-lib   (python/astral/lib@1)
 ├── services
 │   └── payments
-│       ├── app     (payments · python/astral/service@2)
-│       └── infra   (payments-infra · tofu/std/module@1)
+│       ├── app     (python/astral/service@2)
+│       └── infra   (tofu/std/module@1)
 └── tools
+`
+	if buf.String() != want {
+		t.Errorf("renderTree output mismatch:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+// TestRenderTreeDependencies covers the spam case from the user's repo: the
+// same dependency declared twice (sugar + explicit) renders exactly once.
+func TestRenderTreeDependencies(t *testing.T) {
+	cfg := &config.RepoConfig{
+		Workspace: config.Workspace{ProjectRoots: []string{"libs"}},
+	}
+	spam := discovery.Project{
+		Dir: "libs/spam",
+		Manifest: &manifest.Manifest{
+			Name: "spam",
+			Type: "python/astral/service@2",
+			DependsOn: []manifest.Dependency{
+				{Project: "foobar", Targets: []string{"build"}, Before: []string{"build"}},
+				{Project: "foobar", Targets: []string{"test"}, Before: []string{"build"}},
+			},
+		},
+	}
+	projects := []discovery.Project{
+		project("libs/foobar", "foobar", "python/astral/service@2"),
+		spam,
+	}
+
+	var buf bytes.Buffer
+	if err := renderTree(&buf, "smith-test-repo", cfg, projects); err != nil {
+		t.Fatalf("renderTree: %v", err)
+	}
+
+	want := `smith-test-repo
+└── libs
+    ├── foobar   (python/astral/service@2)
+    └── spam     (python/astral/service@2 -> foobar)
+`
+	if buf.String() != want {
+		t.Errorf("renderTree output mismatch:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+// TestRenderTreeMultiDeps covers several dependencies: sorted, comma-joined.
+func TestRenderTreeMultiDeps(t *testing.T) {
+	cfg := &config.RepoConfig{
+		Workspace: config.Workspace{ProjectRoots: []string{"libs"}},
+	}
+	projects := []discovery.Project{
+		project("libs/auth", "auth", "python/astral/lib@1"),
+		project("libs/zebra", "zebra", "python/astral/lib@1"),
+		projectWithDeps("libs/x", "x", "go/std/lib@1", "zebra", "auth"),
+	}
+
+	var buf bytes.Buffer
+	if err := renderTree(&buf, "demo", cfg, projects); err != nil {
+		t.Fatalf("renderTree: %v", err)
+	}
+
+	want := `demo
+└── libs
+    ├── auth    (python/astral/lib@1)
+    ├── x       (go/std/lib@1 -> auth, zebra)
+    └── zebra   (python/astral/lib@1)
 `
 	if buf.String() != want {
 		t.Errorf("renderTree output mismatch:\n%s\nwant:\n%s", buf.String(), want)
@@ -63,7 +145,7 @@ func TestRenderTreeProjectAtRoot(t *testing.T) {
 	}
 
 	want := `demo
-└── libs   (libs · python/astral/lib@1)
+└── libs   (python/astral/lib@1)
 `
 	if buf.String() != want {
 		t.Errorf("renderTree output mismatch:\n%s\nwant:\n%s", buf.String(), want)
@@ -122,15 +204,158 @@ func TestTreeCommandEndToEnd(t *testing.T) {
 
 	want := fmt.Sprintf(`%s
 ├── libs
-│   └── my-lib   (my-lib · python/astral/lib@1)
+│   └── my-lib   (python/astral/lib@1)
 ├── services
 │   └── payments
-│       ├── app     (payments · python/astral/service@2)
-│       └── infra   (payments-infra · tofu/std/module@1)
+│       ├── app     (python/astral/service@2)
+│       └── infra   (tofu/std/module@1)
 └── tools
 `, filepath.Base(repo))
 	if out != want {
 		t.Errorf("tree output mismatch:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// writeSpamRepo builds an initialized mock repo with libs/foobar and
+// libs/spam, where spam declares foobar twice: sugar form plus explicit
+// {targets: [test], before: [build]}. It returns the repo path.
+func writeSpamRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	smithDir := filepath.Join(repo, ".smith")
+	if err := os.MkdirAll(smithDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoYML := "version: 1\nname: mock\n" +
+		"registries:\n" +
+		"  - name: r\n" +
+		"    types: {git: https://example.com/types}\n" +
+		"    templates: {git: https://example.com/templates}\n" +
+		"workspace:\n  project_roots:\n    - libs\n"
+	if err := os.WriteFile(filepath.Join(smithDir, "repo.yml"), []byte(repoYML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	foobar := filepath.Join(repo, "libs", "foobar")
+	if err := os.MkdirAll(foobar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foobar, "smith.yml"), []byte("version: 1\nname: foobar\ntype: python/astral/service@2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spam := filepath.Join(repo, "libs", "spam")
+	if err := os.MkdirAll(spam, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spamYML := "version: 1\nname: spam\ntype: python/astral/service@2\n" +
+		"depends_on:\n" +
+		"  - foobar\n" +
+		"  - project: foobar\n" +
+		"    targets: [test]\n" +
+		"    before: [build]\n"
+	if err := os.WriteFile(filepath.Join(spam, "smith.yml"), []byte(spamYML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+// TestTreeCommandDependencies proves the dependency annotation flows from an
+// on-disk smith.yml through discovery into the rendered tree.
+func TestTreeCommandDependencies(t *testing.T) {
+	repo := writeSpamRepo(t)
+	t.Chdir(repo)
+	out, err := run(t, "tree")
+	if err != nil {
+		t.Fatalf("tree: %v\noutput:\n%s", err, out)
+	}
+
+	want := fmt.Sprintf(`%s
+└── libs
+    ├── foobar   (python/astral/service@2)
+    └── spam     (python/astral/service@2 -> foobar)
+`, filepath.Base(repo))
+	if out != want {
+		t.Errorf("tree output mismatch:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// TestTreeCommandShowDeps covers --show-deps end to end: the tree is
+// unchanged and the Dependencies section spells out both foobar edges,
+// including the sugar entry's build → build defaults.
+func TestTreeCommandShowDeps(t *testing.T) {
+	repo := writeSpamRepo(t)
+	t.Chdir(repo)
+	out, err := run(t, "tree", "--show-deps")
+	if err != nil {
+		t.Fatalf("tree --show-deps: %v\noutput:\n%s", err, out)
+	}
+
+	want := fmt.Sprintf(`%s
+└── libs
+    ├── foobar   (python/astral/service@2)
+    └── spam     (python/astral/service@2 -> foobar)
+
+Dependencies:
+  spam → foobar   build → build
+  spam → foobar   test → build
+`, filepath.Base(repo))
+	if out != want {
+		t.Errorf("tree --show-deps output mismatch:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// TestTreeCommandShowDepsWithoutFlag proves the default output has no
+// Dependencies section.
+func TestTreeCommandShowDepsWithoutFlag(t *testing.T) {
+	repo := writeSpamRepo(t)
+	t.Chdir(repo)
+	out, err := run(t, "tree")
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	if strings.Contains(out, "Dependencies:") {
+		t.Errorf("default tree output contains a Dependencies section:\n%s", out)
+	}
+}
+
+// TestRenderDepsSorted covers the section's ordering across projects:
+// project, then dependency, then targets.
+func TestRenderDepsSorted(t *testing.T) {
+	projects := []discovery.Project{
+		projectWithDeps("services/web", "web", "python/astral/service@2",
+			"database"),
+		projectWithDeps("libs/auth", "auth", "python/astral/lib@1", "util"),
+		project("libs/util", "util", "python/astral/lib@1"),
+	}
+	// web → database is explicit: migrate on the dependency before build here.
+	projects[0].Manifest.DependsOn[0] = manifest.Dependency{
+		Project: "database", Targets: []string{"migrate"}, Before: []string{"build"},
+	}
+
+	var buf bytes.Buffer
+	renderDeps(&buf, projects)
+
+	want := `
+Dependencies:
+  auth → util   build → build
+  web → database   migrate → build
+`
+	if buf.String() != want {
+		t.Errorf("renderDeps output mismatch:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+// TestRenderDepsNoDeps proves the section is omitted when no project has
+// dependencies — the flag then changes nothing.
+func TestRenderDepsNoDeps(t *testing.T) {
+	projects := []discovery.Project{
+		project("libs/a", "a", "python/astral/lib@1"),
+		project("libs/b", "b", "python/astral/lib@1"),
+	}
+	var buf bytes.Buffer
+	renderDeps(&buf, projects)
+	if buf.Len() != 0 {
+		t.Errorf("renderDeps with no deps = %q, want empty", buf.String())
 	}
 }
 
