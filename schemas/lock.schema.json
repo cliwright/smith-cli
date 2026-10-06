@@ -59,7 +59,7 @@
       "type": "object",
       "additionalProperties": false,
       "oneOf": [
-        { "required": ["git", "rev"] },
+        { "required": ["git"] },
         { "required": ["path"] }
       ],
       "properties": {
@@ -67,7 +67,7 @@
         "rev": {
           "type": "string",
           "pattern": "^[0-9a-f]{40}$",
-          "description": "Git commit SHA at sync time."
+          "description": "Git commit SHA at sync time. Absent until the first sync."
         },
         "path": { "type": "string", "minLength": 1 }
       }

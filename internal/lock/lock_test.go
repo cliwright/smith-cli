@@ -81,9 +81,9 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			want: "hash",
 		},
 		{
-			name: "git source without rev",
-			json: `{"version":1,"sources":{"r":{"types":{"git":"https://example.com"},"templates":{"path":"/y"}}},"types":{"python/astral/lib@1":{"registry":"r","hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
-			want: "sources",
+			name: "malformed rev",
+			json: `{"version":1,"sources":{"r":{"types":{"git":"https://example.com","rev":"notasha"},"templates":{"path":"/y"}}},"types":{"python/astral/lib@1":{"registry":"r","hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
+			want: "rev",
 		},
 		{
 			name: "unknown top-level key",
@@ -105,6 +105,27 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 				t.Errorf("Load(%q) error = %q, want substring %q", path, err, tt.want)
 			}
 		})
+	}
+}
+
+// TestLoadGitSourceWithoutRev verifies the pre-sync shape written by
+// `smith init`: a git source with no rev is valid.
+func TestLoadGitSourceWithoutRev(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock.json")
+	doc := `{"version":1,"sources":{"cliwright":{"types":{"git":"https://example.com/types"},"templates":{"git":"https://example.com/templates"}}},"types":{}}`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q): %v", path, err)
+	}
+	src := lk.Sources["cliwright"].Types
+	if src.Git != "https://example.com/types" {
+		t.Errorf("Git = %q", src.Git)
+	}
+	if src.Rev != "" {
+		t.Errorf("Rev = %q, want empty before the first sync", src.Rev)
 	}
 }
 

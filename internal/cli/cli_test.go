@@ -31,7 +31,9 @@ func TestRootHelpListsCommandTree(t *testing.T) {
 }
 
 func TestSubcommandStubs(t *testing.T) {
-	for _, cmd := range []string{"init", "new", "sync", "types", "doctor", "tree", "list"} {
+	// init is implemented (see init_test.go) and must not scribble into the
+	// package directory, so it is not in this list.
+	for _, cmd := range []string{"new", "sync", "types", "doctor", "tree", "list"} {
 		t.Run(cmd, func(t *testing.T) {
 			out, err := run(t, cmd)
 			if err != nil {

@@ -5,19 +5,8 @@ import (
 )
 
 // The repo-level commands of the CLI, one stub per spec section. Each prints
-// a single line about what it will eventually do.
-
-func newInitCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "init",
-		Short: "Initialize the current directory as a Smith repository",
-		Args:  cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cmd.Println("not implemented yet: initialize the current directory as a Smith repository (.smith/repo.yml, .smith/lock.json, ~/.smith cache root)")
-			return nil
-		},
-	}
-}
+// a single line about what it will eventually do. (init lives in init.go and
+// is implemented.)
 
 func newNewCmd() *cobra.Command {
 	return &cobra.Command{
