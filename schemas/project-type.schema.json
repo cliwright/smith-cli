@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smith.cliwright.dev/schemas/project-type.v1.json",
+  "title": "Smith Project Type",
+  "description": "A versioned project-type definition from the registry (project-type.json). Name and version must match the registry layout: <language>/<flavor>/<kind>/v<version>/project-type.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "description", "tools", "targets"],
+  "properties": {
+    "name": {
+      "description": "Type name, language/flavor/kind. Flavor is mandatory: 'std' when the language has a standard toolchain, otherwise an arbitrary string unique within the language namespace.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*){2}$"
+    },
+    "version": {
+      "description": "Type version. Must equal the version directory in the registry path (app-level check).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "description": "What this type of project can do, independent of how. Optional and non-load-bearing in the MVP.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "buildable",
+          "testable",
+          "lintable",
+          "formattable",
+          "runnable",
+          "packageable",
+          "validatable",
+          "planable",
+          "applicable",
+          "deployable"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "tools": {
+      "description": "Tools required on PATH to run this type's targets (BYOT). Version constraints may be added later.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "working_dir": {
+      "description": "Where targets execute: the project directory (default) or the repository root (e.g. docker build contexts). Exactly these two values — no arbitrary paths.",
+      "type": "string",
+      "enum": ["project", "repo"],
+      "default": "project"
+    },
+    "targets": {
+      "description": "Named targets, each a list of shell command steps run in order; the first non-zero exit fails the target.",
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]*$": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "depends_on": {
+      "description": "Target dependency map: target -> targets that must complete first. Referenced target names, self-references, and cycles are validated by smith (not expressible here).",
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-z0-9-]*$": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

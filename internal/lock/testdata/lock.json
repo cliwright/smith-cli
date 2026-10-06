@@ -1,0 +1,23 @@
+{
+  "version": 1,
+
+  "sources": {
+    "cliwright": {
+      "types": {
+        "git": "https://github.com/cliwright/smith-project-types",
+        "rev": "9f2c1eab40d3a7b5c88e61f2c0d4e6a78b31d592"
+      },
+      "templates": {
+        "git": "https://github.com/cliwright/smith-project-templates",
+        "rev": "4a7b3dce9215f8c0b6a31e7d2e94b5c8d0f1a334"
+      }
+    }
+  },
+
+  "types": {
+    "python/astral/lib@1": {
+      "registry": "cliwright",
+      "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

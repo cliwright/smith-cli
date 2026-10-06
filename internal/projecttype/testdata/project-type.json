@@ -1,0 +1,23 @@
+{
+  "name": "python/astral/lib",
+  "version": 1,
+  "description": "Python library on the Astral toolchain (uv, ruff, ty)",
+
+  "capabilities": ["buildable", "testable", "lintable", "formattable", "packageable"],
+
+  "tools": ["python", "uv"],
+
+  "working_dir": "project",
+
+  "targets": {
+    "lint":   ["uv run ruff check ."],
+    "format": ["uv run ruff format ."],
+    "test":   ["uv run pytest"],
+    "build":  ["uv build"],
+    "clean":  ["rm -rf dist .venv"]
+  },
+
+  "depends_on": {
+    "build": ["lint", "test"]
+  }
+}

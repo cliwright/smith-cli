@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smith.cliwright.dev/schemas/repo-config.v1.json",
+  "title": "Smith Repository Configuration",
+  "description": "Configuration for a Smith repository, stored at .smith/repo.yml",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "registries", "workspace"],
+  "properties": {
+    "version": {
+      "description": "File-format version. Always 1 for this schema.",
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "description": "Repository name. Required; identifies the monorepo.",
+      "type": "string",
+      "minLength": 1
+    },
+    "registries": {
+      "description": "Registry sources, in priority order: first match wins when a type or template exists in more than one registry.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/registry" }
+    },
+    "tools": {
+      "description": "Tools required repo-wide, checked by smith doctor against PATH (BYOT).",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_roots"],
+      "properties": {
+        "project_roots": {
+          "description": "Directories Smith traverses to find projects. Smith never looks outside these roots.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*\\.\\.)[\\w./-]+$",
+            "description": "Relative path from repo root; no absolute paths, no '..'"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "types", "templates"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registry name. Must be unique across the registries list (enforced by smith, not by this schema)."
+        },
+        "types": { "$ref": "#/$defs/source" },
+        "templates": { "$ref": "#/$defs/source" }
+      }
+    },
+    "source": {
+      "description": "A registry source: either a git URL or a local filesystem path (dev only).",
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["git"] },
+        { "required": ["path"] }
+      ],
+      "properties": {
+        "git": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Git URL to clone/pull (https or ssh)."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Local directory, read in place; dev escape hatch."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smith.cliwright.dev/schemas/project-manifest.v1.json",
+  "title": "Smith Project Manifest",
+  "description": "Per-project manifest (smith.yml). Declares what a project is, never how it is built. Project names must be unique across the repository (enforced by smith during discovery, not expressible here).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "type"],
+  "properties": {
+    "version": {
+      "description": "File-format version. Always 1 for this schema.",
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "description": "Project name. Canonical dependency identifier; must be unique across the repo.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "minLength": 1
+    },
+    "type": {
+      "description": "Project type ref from the registry: language/flavor/kind@version.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*){2}@[1-9][0-9]*$"
+    },
+    "depends_on": {
+      "description": "Dependencies on other projects by name. Sugar form: a bare string means dep's 'build' before this project's 'build'. Explicit form: run 'targets' on the dependency before 'before' targets on this project. Both default to [build]. Referenced names and duplicate deps are validated by smith.",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "description": "Sugar form.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          {
+            "description": "Explicit form.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["project"],
+            "properties": {
+              "project": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "targets": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+                "uniqueItems": true
+              },
+              "before": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+                "uniqueItems": true
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

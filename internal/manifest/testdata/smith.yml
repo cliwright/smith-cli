@@ -1,0 +1,29 @@
+# smith.yml — Smith project manifest. One per project directory; declares
+# what the project IS, never how it is built (that's the project type's job).
+version: 1
+
+# Required. The canonical dependency identifier — other projects declare
+# dependencies on this name, not on filesystem paths. Must be unique across
+# the repository; Smith fails discovery on duplicate names.
+name: payments
+
+# Required. Project type from the registry, pinned to a version.
+type: python/astral/service@2
+
+# Optional. Dependencies on other projects, by name. Smith runs `targets` on
+# the DEPENDENCY project before `before` targets on THIS project, then merges
+# everything into the repo's target graph.
+#
+# Two forms, one list:
+#   - auth                        # sugar: auth:build before this project's build
+#   - project: database           # explicit form
+#     targets: [test, lint, build]  # run these on the dependency...
+#     before: [build]               # ...before these run here (both default: [build])
+depends_on:
+  - auth
+  - project: database
+    targets: [test, lint, build]
+    before: [build]
+  - project: auth
+    targets: [run]
+    before: [test]
