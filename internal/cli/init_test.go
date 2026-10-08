@@ -76,21 +76,10 @@ func TestInitFreshDir(t *testing.T) {
 		}
 	}
 
-	// lock.json loads through internal/lock: cliwright recorded without rev,
-	// nothing pinned yet.
+	// lock.json loads through internal/lock: nothing pinned yet.
 	lk, err := lock.Load(lockJSON)
 	if err != nil {
 		t.Fatalf("lock.Load(%q): %v", lockJSON, err)
-	}
-	src, ok := lk.Sources[registryName]
-	if !ok {
-		t.Fatalf("lock sources missing %q", registryName)
-	}
-	if src.Types.Git != typesGitURL || src.Templates.Git != templatesGitURL {
-		t.Errorf("lock sources = %+v", src)
-	}
-	if src.Types.Rev != "" || src.Templates.Rev != "" {
-		t.Errorf("revisions before first sync = %q/%q, want empty", src.Types.Rev, src.Templates.Rev)
 	}
 	if len(lk.Types) != 0 {
 		t.Errorf("pinned types = %v, want none", lk.Types)

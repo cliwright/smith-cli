@@ -21,22 +21,6 @@ func TestLoad(t *testing.T) {
 				if lk.Version != 1 {
 					t.Errorf("Version = %d, want 1", lk.Version)
 				}
-				if len(lk.Sources) != 1 {
-					t.Fatalf("len(Sources) = %d, want 1", len(lk.Sources))
-				}
-				cliwright, ok := lk.Sources["cliwright"]
-				if !ok {
-					t.Fatalf("Sources missing %q", "cliwright")
-				}
-				if cliwright.Types.Git != "https://github.com/cliwright/smith-project-types" {
-					t.Errorf("Types.Git = %q", cliwright.Types.Git)
-				}
-				if cliwright.Types.Rev != "9f2c1eab40d3a7b5c88e61f2c0d4e6a78b31d592" {
-					t.Errorf("Types.Rev = %q", cliwright.Types.Rev)
-				}
-				if cliwright.Templates.Git != "https://github.com/cliwright/smith-project-templates" {
-					t.Errorf("Templates.Git = %q", cliwright.Templates.Git)
-				}
 				if len(lk.Types) != 1 {
 					t.Fatalf("len(Types) = %d, want 1", len(lk.Types))
 				}
@@ -72,23 +56,28 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 	}{
 		{
 			name: "types key not a name@version ref",
-			json: `{"version":1,"sources":{"r":{"types":{"path":"/x"},"templates":{"path":"/y"}}},"types":{"python/astral/lib":{"registry":"r","hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
+			json: `{"version":1,"types":{"python/astral/lib":{"registry":"r","hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
 			want: "types",
 		},
 		{
 			name: "hash not sha256",
-			json: `{"version":1,"sources":{"r":{"types":{"path":"/x"},"templates":{"path":"/y"}}},"types":{"python/astral/lib@1":{"registry":"r","hash":"md5:zzz"}}}`,
+			json: `{"version":1,"types":{"python/astral/lib@1":{"registry":"r","hash":"md5:zzz"}}}`,
 			want: "hash",
 		},
 		{
-			name: "malformed rev",
-			json: `{"version":1,"sources":{"r":{"types":{"git":"https://example.com","rev":"notasha"},"templates":{"path":"/y"}}},"types":{"python/astral/lib@1":{"registry":"r","hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
-			want: "rev",
+			name: "pin missing registry",
+			json: `{"version":1,"types":{"python/astral/lib@1":{"hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
+			want: "registry",
 		},
 		{
 			name: "unknown top-level key",
-			json: `{"version":1,"sources":{"r":{"types":{"path":"/x"},"templates":{"path":"/y"}}},"types":{},"extra":1}`,
+			json: `{"version":1,"types":{},"extra":1}`,
 			want: "extra",
+		},
+		{
+			name: "sources block is no longer allowed",
+			json: `{"version":1,"sources":{"r":{"types":{"git":"https://example.com"}}},"types":{}}`,
+			want: "sources",
 		},
 	}
 	for _, tt := range tests {
@@ -108,27 +97,6 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 	}
 }
 
-// TestLoadGitSourceWithoutRev verifies the pre-sync shape written by
-// `smith init`: a git source with no rev is valid.
-func TestLoadGitSourceWithoutRev(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "lock.json")
-	doc := `{"version":1,"sources":{"cliwright":{"types":{"git":"https://example.com/types"},"templates":{"git":"https://example.com/templates"}}},"types":{}}`
-	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	lk, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load(%q): %v", path, err)
-	}
-	src := lk.Sources["cliwright"].Types
-	if src.Git != "https://example.com/types" {
-		t.Errorf("Git = %q", src.Git)
-	}
-	if src.Rev != "" {
-		t.Errorf("Rev = %q, want empty before the first sync", src.Rev)
-	}
-}
-
 func TestSaveRoundTrip(t *testing.T) {
 	lk, err := Load("testdata/lock.json")
 	if err != nil {
@@ -144,8 +112,37 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	pin := reloaded.Types["python/astral/lib@1"]
 	if pin.Hash != lk.Types["python/astral/lib@1"].Hash ||
-		pin.Registry != "cliwright" ||
-		len(reloaded.Sources) != 1 {
+		pin.Registry != "cliwright" {
 		t.Errorf("round trip = %+v", reloaded)
+	}
+}
+
+func TestWriteAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lock.json")
+	lk := &Lock{Version: 1, Types: map[string]TypePin{
+		"python/astral/lib@1": {Registry: "cliwright", Hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+	}}
+	if err := WriteAtomic(path, lk); err != nil {
+		t.Fatalf("WriteAtomic: %v", err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q): %v", path, err)
+	}
+	if len(reloaded.Types) != 1 {
+		t.Errorf("Types = %v, want one pin", reloaded.Types)
+	}
+	// No temporary files left behind.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "lock.json" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("dir contains %v, want only lock.json", names)
 	}
 }

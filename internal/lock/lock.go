@@ -8,30 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/cliwright/smith/internal/validate"
 )
 
 // Lock is the typed view of .smith/lock.json.
 type Lock struct {
-	Version int                  `json:"version" yaml:"version"`
-	Sources map[string]SourceSet `json:"sources" yaml:"sources"`
-	Types   map[string]TypePin   `json:"types" yaml:"types"`
-}
-
-// SourceSet pins the types and templates sources of one registry as of the
-// last sync.
-type SourceSet struct {
-	Types     Source `json:"types" yaml:"types"`
-	Templates Source `json:"templates" yaml:"templates"`
-}
-
-// Source is a pinned registry source: either git at an exact commit, or a
-// local path (dev mode, no rev recorded).
-type Source struct {
-	Git  string `json:"git,omitempty" yaml:"git,omitempty"`
-	Rev  string `json:"rev,omitempty" yaml:"rev,omitempty"`
-	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+	Version int                `json:"version" yaml:"version"`
+	Types   map[string]TypePin `json:"types" yaml:"types"`
 }
 
 // TypePin pins one project type, keyed by name@version in the Types map.
@@ -79,6 +64,33 @@ func Save(path string, lk *Lock) error {
 		return err
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+// WriteAtomic renders lk and writes it to path atomically: the bytes land in
+// a temporary file in the same directory and are renamed over path, so a
+// crash mid-write can never leave a truncated lock behind.
+func WriteAtomic(path string, lk *Lock) error {
+	data, err := Marshal(lk)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".lock-*.tmp")
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil

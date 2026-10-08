@@ -17,14 +17,23 @@ func TestValidate(t *testing.T) {
 			docName: Lock,
 			doc: map[string]any{
 				"version": 1,
-				"sources": map[string]any{
-					"r": map[string]any{
-						"types":     map[string]any{"path": "/x"},
-						"templates": map[string]any{"path": "/y"},
+				"types": map[string]any{
+					"python/astral/lib@1": map[string]any{
+						"registry": "cliwright",
+						"hash":     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 					},
 				},
-				"types": map[string]any{},
 			},
+		},
+		{
+			name:    "lock rejects a sources block",
+			docName: Lock,
+			doc: map[string]any{
+				"version": 1,
+				"sources": map[string]any{"cliwright": map[string]any{}},
+				"types":   map[string]any{},
+			},
+			wantErr: "schema validation failed",
 		},
 		{
 			name:    "missing required field",

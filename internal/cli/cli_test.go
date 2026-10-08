@@ -31,10 +31,10 @@ func TestRootHelpListsCommandTree(t *testing.T) {
 }
 
 func TestSubcommandStubs(t *testing.T) {
-	// init and tree are implemented (see init_test.go and tree_test.go) and
-	// must not run against the package directory, so they are not in this
-	// list.
-	for _, cmd := range []string{"new", "sync", "types", "doctor", "list"} {
+	// init, tree and sync are implemented (see init_test.go, tree_test.go and
+	// sync_test.go) and must not run against the package directory, so they
+	// are not in this list.
+	for _, cmd := range []string{"new", "types", "doctor", "list"} {
 		t.Run(cmd, func(t *testing.T) {
 			out, err := run(t, cmd)
 			if err != nil {

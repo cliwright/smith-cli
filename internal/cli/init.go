@@ -124,18 +124,12 @@ func writeRepoYML(path, repoName string) error {
 	return nil
 }
 
-// writeLockJSON writes the pre-sync lock: the cliwright registry recorded
-// without revisions, and no pinned types.
+// writeLockJSON writes the pre-sync lock: nothing pinned yet. sync fills it
+// in after fetching types.
 func writeLockJSON(path string) error {
 	lk := lock.Lock{
 		Version: 1,
-		Sources: map[string]lock.SourceSet{
-			registryName: {
-				Types:     lock.Source{Git: typesGitURL},
-				Templates: lock.Source{Git: templatesGitURL},
-			},
-		},
-		Types: map[string]lock.TypePin{},
+		Types:   map[string]lock.TypePin{},
 	}
 	data, err := lock.Marshal(&lk)
 	if err != nil {
