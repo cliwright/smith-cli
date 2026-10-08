@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +18,7 @@ import (
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/discovery"
 	"github.com/cliwright/smith/internal/lock"
+	"github.com/cliwright/smith/internal/projecttype"
 	syncpkg "github.com/cliwright/smith/internal/sync"
 	"github.com/cliwright/smith/internal/typeref"
 )
@@ -106,6 +108,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	out := stdout(cmd)
 
 	var staged []stagedInstall
+	var fetchedRefs []typeref.TypeRef
 	fetched := 0
 	for _, ref := range refs {
 		dest := filepath.Join(installRoot, installRelPath(ref))
@@ -130,6 +133,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 		staged = append(staged, stagedInstall{path: dest, content: ft.Content})
 		lockState.Types[ref.String()] = lock.TypePin{Registry: registry, Hash: ft.Hash}
+		fetchedRefs = append(fetchedRefs, ref)
 		fetched++
 		fmt.Fprintf(out, "%s: fetched from %s\n", ref, registry)
 	}
@@ -139,7 +143,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Every fetch succeeded: commit installs, then the lock (atomically).
+	// Every fetch succeeded: commit installs, union the new types' tools
+	// into repo.yml, then the lock (atomically).
 	for _, s := range staged {
 		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 			return fmt.Errorf("installing %s: %w", s.path, err)
@@ -147,6 +152,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if err := os.WriteFile(s.path, s.content, 0o644); err != nil {
 			return fmt.Errorf("installing %s: %w", s.path, err)
 		}
+	}
+	repoYMLPath := filepath.Join(repoRoot, cacheDirName, repoYMLName)
+	added, err := unionFetchedTools(repoYMLPath, cfg, installRoot, fetchedRefs)
+	if err != nil {
+		return err
+	}
+	if len(added) > 0 {
+		fmt.Fprintf(out, "%s: added tools: %s\n", filepath.Join(cacheDirName, repoYMLName), strings.Join(added, ", "))
 	}
 	lockState, err := getLock()
 	if err != nil {
@@ -158,6 +171,41 @@ func runSync(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "lock written to %s (%d type(s) pinned)\n",
 		filepath.Join(cacheDirName, lockJSONName), len(lockState.Types))
 	return nil
+}
+
+// unionFetchedTools adds the tools declared by each freshly fetched type to
+// the repo config's tools list (BYOT — doctor checks them against PATH). The
+// write goes through the comment-preserving config round-trip, and only
+// happens when the set actually changed.
+func unionFetchedTools(repoYMLPath string, cfg *config.RepoConfig, installRoot string, refs []typeref.TypeRef) ([]string, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	existing := make(map[string]bool, len(cfg.Tools))
+	for _, tool := range cfg.Tools {
+		existing[tool] = true
+	}
+	var added []string
+	for _, ref := range refs {
+		pt, err := projecttype.Load(filepath.Join(installRoot, installRelPath(ref)))
+		if err != nil {
+			return nil, fmt.Errorf("installed type %s: %w", ref, err)
+		}
+		for _, tool := range pt.Tools {
+			if !existing[tool] {
+				existing[tool] = true
+				added = append(added, tool)
+			}
+		}
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	cfg.Tools = append(cfg.Tools, added...)
+	if err := config.Save(repoYMLPath, cfg); err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
 // resolveRefs returns the sorted, deduplicated set of type refs to sync:

@@ -56,8 +56,8 @@ func TestInitFreshDir(t *testing.T) {
 	if !slices.Equal(cfg.Workspace.ProjectRoots, []string{"libs", "tools", "services", "images"}) {
 		t.Errorf("project_roots = %v", cfg.Workspace.ProjectRoots)
 	}
-	if len(cfg.Tools) != 0 {
-		t.Errorf("tools = %v, want empty", cfg.Tools)
+	if !slices.Equal(cfg.Tools, []string{"cookiecutter"}) {
+		t.Errorf("tools = %v, want [cookiecutter]", cfg.Tools)
 	}
 
 	// The template's explanatory comments made it into the file.

@@ -13,10 +13,12 @@ registries:
     templates: { git: https://github.com/cliwright/smith-project-templates }
 
 # Tools required to work in this repo, checked by `smith doctor` against PATH
-# (BYOT — Smith never installs anything). `smith new` appends tools required
-# by each new project's type. Project types may declare additional per-project
+# (BYOT — Smith never installs anything). Seeded with cookiecutter, which
+# `smith new` invokes. `smith sync` appends tools required by each project's
+# type (unioned idempotently). Project types may declare additional per-project
 # tools; doctor unions both lists.
-tools: []
+tools:
+  - cookiecutter
 
 # Smith ONLY traverses these directories looking for smith.yml projects —
 # this is what avoids node_modules/.venv hell. Seeded with defaults by

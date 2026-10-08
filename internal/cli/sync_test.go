@@ -7,13 +7,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/lock"
 )
 
-const testTypeContent = `{"name":"python/astral/lib","version":1,"description":"Python library on the Astral toolchain","tools":["python"],"targets":{"build":["uv build"]}}`
+const testTypeContent = `{"name":"python/astral/lib","version":1,"description":"Python library on the Astral toolchain","tools":["python","uv"],"targets":{"build":["uv build"]}}`
 
 // fakeRegistries is an httptest server pretending to be raw.githubusercontent.com.
 type fakeRegistries struct {
@@ -349,6 +351,126 @@ func TestSyncOutsideRepo(t *testing.T) {
 	_, err := run(t, "sync")
 	if err == nil || !strings.Contains(err.Error(), "not a Smith repository") {
 		t.Fatalf("sync error = %v, want not-a-repo", err)
+	}
+}
+
+// writeToolsRepo creates an initialized repo whose repo.yml carries a
+// comment (to prove the tools-union write preserves it) and an optional
+// existing tools list.
+func writeToolsRepo(t *testing.T, repo, toolsLine string) {
+	t.Helper()
+	smithDir := filepath.Join(repo, ".smith")
+	if err := os.MkdirAll(smithDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoYML := "version: 1\nname: mock\n" +
+		"# Registry sources, in priority order: first match wins.\n" +
+		"registries:\n" +
+		"  - name: cliwright\n" +
+		"    types: {git: https://github.com/cliwright/types}\n" +
+		"    templates: {git: https://github.com/cliwright/templates}\n" +
+		"workspace:\n  project_roots:\n    - libs\n" +
+		toolsLine
+	if err := os.WriteFile(filepath.Join(smithDir, "repo.yml"), []byte(repoYML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncUnionsToolsIntoRepoYML(t *testing.T) {
+	setupHome(t)
+	f := newFakeRegistries(t)
+	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeToolsRepo(t, repo, "")
+	t.Chdir(repo)
+
+	out, err := run(t, "sync", "python/astral/lib@1")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "added tools: python, uv") {
+		t.Errorf("output missing tools-union notice:\n%s", out)
+	}
+
+	cfg, err := config.Load(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if !slices.Equal(cfg.Tools, []string{"python", "uv"}) {
+		t.Errorf("tools = %v, want [python uv]", cfg.Tools)
+	}
+	raw, err := os.ReadFile(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "# Registry sources, in priority order: first match wins.") {
+		t.Error("repo.yml lost its comments in the tools union")
+	}
+
+	// Second sync: everything up to date, repo.yml byte-identical.
+	before, err := os.ReadFile(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = run(t, "sync", "python/astral/lib@1")
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !strings.Contains(out, "all types up to date") {
+		t.Errorf("second sync output = %q", out)
+	}
+	after, err := os.ReadFile(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("second sync rewrote repo.yml:\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestSyncToolsUnionSkipsExisting(t *testing.T) {
+	setupHome(t)
+	f := newFakeRegistries(t)
+	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeToolsRepo(t, repo, "tools:\n  - python\n  - git\n")
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync", "python/astral/lib@1"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	cfg, err := config.Load(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if !slices.Equal(cfg.Tools, []string{"python", "git", "uv"}) {
+		t.Errorf("tools = %v, want [python git uv]", cfg.Tools)
+	}
+}
+
+func TestSyncToolsUnionOnlyOnSuccess(t *testing.T) {
+	setupHome(t)
+	f := newFakeRegistries(t)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeToolsRepo(t, repo, "")
+	t.Chdir(repo)
+
+	_, err := run(t, "sync", "python/astral/lib@1")
+	if err == nil {
+		t.Fatal("sync succeeded, want not-found error")
+	}
+	cfg, loadErr := config.Load(filepath.Join(repo, ".smith", "repo.yml"))
+	if loadErr != nil {
+		t.Fatalf("config.Load: %v", loadErr)
+	}
+	if len(cfg.Tools) != 0 {
+		t.Errorf("tools = %v, want untouched on failure", cfg.Tools)
 	}
 }
 

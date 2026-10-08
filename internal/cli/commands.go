@@ -7,14 +7,9 @@ import (
 )
 
 // The repo-level commands of the CLI, one stub per spec section. Each prints
-// a single line about what it will eventually do. (init, tree and sync are
-// implemented; init in init.go, tree in tree.go, sync in sync.go.)
-
-func newNewCmd() *cobra.Command {
-	return stub("new <archetype> <project-type>",
-		"Scaffold a new project from a Cookiecutter template",
-		"not implemented yet: scaffold a new project from a Cookiecutter template (smith new lib python → libs/<name>, then extend repo.yml)")
-}
+// a single line about what it will eventually do. (init, tree, sync and new
+// are implemented; init in init.go, tree in tree.go, sync in sync.go, new in
+// new.go.)
 
 func newTypesCmd() *cobra.Command {
 	return stub("types [<name>[@<version>]]",
