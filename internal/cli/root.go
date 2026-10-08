@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/spf13/cobra"
 )
@@ -53,14 +54,25 @@ func stdout(cmd *cobra.Command) io.Writer {
 	return cmd.OutOrStdout()
 }
 
-// dispatch handles invocations that did not match a subcommand: known
-// namespaces get the namespace stub, anything else is an unknown command.
+// dispatch handles invocations that did not match a subcommand: namespace
+// grammar (list projects, list targets, run targets), then the repo-wide
+// target form. Subcommand names stay reserved — cobra routes them before
+// this runs, so a namespace named "sync" is shadowed (documented, not coded
+// around).
 func dispatch(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
-	if isNamespace(args[0]) {
-		return runNamespace(cmd, args)
+	rc, err := loadRepoContext()
+	if err != nil {
+		return err
+	}
+	if slices.Contains(rc.namespaces(), args[0]) {
+		return rc.dispatchNamespace(cmd, args[0], args[1:])
+	}
+	if len(args) == 1 {
+		// smith <target> — run the target repo-wide.
+		return rc.runTarget(cmd, args[0], rc.projects, "this repository", "")
 	}
 	return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
 }

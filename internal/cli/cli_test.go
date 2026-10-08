@@ -47,32 +47,18 @@ func TestSubcommandStubs(t *testing.T) {
 	}
 }
 
-func TestNamespaceDispatch(t *testing.T) {
-	out, err := run(t, "libs", "my-lib", "test")
-	if err != nil {
-		t.Fatalf("libs my-lib test: %v", err)
-	}
-	if !strings.Contains(out, "namespace dispatch: libs my-lib test (not implemented)") {
-		t.Errorf("output = %q", out)
-	}
-}
-
-func TestEachNamespaceDispatches(t *testing.T) {
-	for _, ns := range []string{"libs", "services", "tools", "images"} {
-		out, err := run(t, ns, "list")
-		if err != nil {
-			t.Fatalf("%s list: %v", ns, err)
-		}
-		if !strings.Contains(out, "namespace dispatch: "+ns+" list") {
-			t.Errorf("output = %q", out)
-		}
-	}
-}
+// Namespace dispatch is fully covered in namespace_test.go; these two
+// stub-era tests (namespace dispatch stub messages) were removed when the
+// dispatcher became real.
 
 func TestUnknownCommand(t *testing.T) {
-	_, err := run(t, "frobnicate")
+	repo := buildMockRepo(t, []string{"libs"}, map[string][2]string{
+		"libs/only": {"only", "python/astral/lib@1"},
+	})
+	t.Chdir(repo)
+	_, err := run(t, "frobnicate", "extra")
 	if err == nil {
-		t.Fatal("frobnicate: want error, got nil")
+		t.Fatal("frobnicate extra: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), `unknown command "frobnicate"`) {
 		t.Errorf("error = %v", err)
