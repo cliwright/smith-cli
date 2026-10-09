@@ -241,6 +241,15 @@ func resolveRefs(repoRoot string, cfg *config.RepoConfig, args []string) ([]type
 			}
 			add(ref)
 		}
+		// Attachments (repo-level targets) join the fetch set; their custody
+		// through the lock is identical to manifest-referenced types.
+		for alias, target := range cfg.RepoTargets {
+			ref, err := typeref.Parse(target.Type)
+			if err != nil {
+				return nil, fmt.Errorf("repo_targets.%s: %w", alias, err)
+			}
+			add(ref)
+		}
 	}
 
 	sort.Slice(refs, func(i, j int) bool { return refs[i].String() < refs[j].String() })

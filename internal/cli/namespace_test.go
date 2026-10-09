@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/manifest"
 	"github.com/cliwright/smith/internal/projecttype"
@@ -58,8 +60,10 @@ type typeSpec struct {
 
 // writeDispatchRepo builds an initialized repo with the given manifests and
 // installs (into the injected home) the types they reference, plus a
-// matching lock. All types are pinned as registry "cliwright".
-func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]manifestSpec, typeOverrides map[string]typeSpec) {
+// matching lock. All types are pinned as registry "cliwright". The optional
+// final argument declares repo_targets (attachments) and installs their
+// types too.
+func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]manifestSpec, typeOverrides map[string]typeSpec, repoTargets ...map[string]config.RepoTarget) {
 	t.Helper()
 	smithDir := filepath.Join(repo, ".smith")
 	if err := os.MkdirAll(smithDir, 0o755); err != nil {
@@ -71,32 +75,28 @@ func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]man
 		"    types: {git: https://github.com/cliwright/types}\n" +
 		"    templates: {git: https://github.com/cliwright/templates}\n" +
 		"workspace:\n  project_roots:\n    - libs\n    - services\n"
+	if len(repoTargets) > 0 && repoTargets[0] != nil {
+		repoYML += renderRepoTargets(repoTargets[0])
+	}
 	if err := os.WriteFile(filepath.Join(smithDir, "repo.yml"), []byte(repoYML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	pins := map[string]lock.TypePin{}
-	for dir, spec := range manifests {
-		full := filepath.Join(repo, filepath.FromSlash(dir))
-		if err := os.MkdirAll(full, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(full, "smith.yml"), []byte(renderManifest(spec)), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		ref, err := typeref.Parse(spec.typ)
+	install := func(refS string, override *typeSpec) {
+		ref, err := typeref.Parse(refS)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, done := pins[ref.String()]; done {
-			continue
+			return
 		}
 		ts := typeSpec{
 			targets: map[string][]string{"build": {"echo build"}},
 			wd:      projecttype.WorkingDirProject,
 		}
-		if override, ok := typeOverrides[ref.String()]; ok {
-			ts = override
+		if override != nil {
+			ts = *override
 		}
 		pt := &projecttype.ProjectType{
 			Name:        ref.Name,
@@ -120,11 +120,71 @@ func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]man
 		}
 		pins[ref.String()] = lock.TypePin{Registry: "cliwright", Hash: hashBytes(data)}
 	}
+	for dir, spec := range manifests {
+		full := filepath.Join(repo, filepath.FromSlash(dir))
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(full, "smith.yml"), []byte(renderManifest(spec)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		install(spec.typ, typeSpecPtr(typeOverrides, spec.typ))
+	}
+	if len(repoTargets) > 0 && repoTargets[0] != nil {
+		for _, rt := range repoTargets[0] {
+			install(rt.Type, typeSpecPtr(typeOverrides, rt.Type))
+		}
+	}
 
 	lk := &lock.Lock{Version: 1, Types: pins}
 	if err := lock.Save(filepath.Join(smithDir, "lock.json"), lk); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func renderRepoTargets(rts map[string]config.RepoTarget) string {
+	aliases := make([]string, 0, len(rts))
+	for alias := range rts {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	var b strings.Builder
+	b.WriteString("repo_targets:\n")
+	for _, alias := range aliases {
+		rt := rts[alias]
+		fmt.Fprintf(&b, "  %s:\n    type: %s\n", alias, rt.Type)
+		if len(rt.Params) > 0 {
+			b.WriteString("    params:\n")
+			for _, key := range sortedStringKeys(rt.Params) {
+				fmt.Fprintf(&b, "      %s: %q\n", key, rt.Params[key])
+			}
+		}
+		if len(rt.Environment) > 0 {
+			b.WriteString("    environment:\n")
+			for _, key := range sortedStringKeys(rt.Environment) {
+				fmt.Fprintf(&b, "      %s: %q\n", key, rt.Environment[key])
+			}
+		}
+	}
+	return b.String()
+}
+
+func sortedStringKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// typeSpecPtr returns a pointer to the override for ref, or nil when the
+// fixture uses the default type shape.
+func typeSpecPtr(overrides map[string]typeSpec, ref string) *typeSpec {
+	if ts, ok := overrides[ref]; ok {
+		return &ts
+	}
+	return nil
 }
 
 func renderManifest(spec manifestSpec) string {
@@ -446,5 +506,159 @@ func TestNsRealExecution(t *testing.T) {
 	want := "alpha:test\nalpha:build\nbeta:test\nbeta:build\n" // shared type: each project's build closes over its own test
 	if string(data) != want {
 		t.Errorf("markers = %q, want %q", data, want)
+	}
+}
+
+var workspaceTarget = map[string]config.RepoTarget{
+	"python": {Type: "repo/uv/workspace@1"},
+}
+
+var workspaceTypeSpec = map[string]typeSpec{
+	"repo/uv/workspace@1": {
+		targets: map[string][]string{
+			"setup": {"echo setup", "echo sync"},
+			"clean": {"echo clean"},
+		},
+		wd: projecttype.WorkingDirProject,
+	},
+}
+
+func TestRepoListsAttachments(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, nil, workspaceTarget)
+	t.Chdir(repo)
+
+	for _, args := range [][]string{{"repo"}, {"repo", "list"}} {
+		out, err := run(t, args...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if out != "python\n" {
+			t.Errorf("%v output = %q, want the attachment alias", args, out)
+		}
+	}
+}
+
+func TestRepoListsAttachmentTargets(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, workspaceTypeSpec, workspaceTarget)
+	t.Chdir(repo)
+
+	out, err := run(t, "repo", "python")
+	if err != nil {
+		t.Fatalf("repo python: %v", err)
+	}
+	if out != "clean\nsetup\n" {
+		t.Errorf("targets = %q, want clean/setup sorted", out)
+	}
+}
+
+func TestRepoRunsAttachmentAtRepoRoot(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, workspaceTypeSpec, workspaceTarget)
+	t.Chdir(repo)
+
+	f := &fakeExec{}
+	useFakeExec(t, f)
+	out, err := run(t, "repo", "python", "setup")
+	if err != nil {
+		t.Fatalf("repo python setup: %v\noutput:\n%s", err, out)
+	}
+	if !slices.Equal(f.runs, []string{"echo setup", "echo sync"}) {
+		t.Errorf("steps = %v", f.runs)
+	}
+	for _, dir := range f.dirs {
+		if dir != repo {
+			t.Errorf("attachment step ran in %q, want repo root %q", dir, repo)
+		}
+	}
+}
+
+func TestRepoUnknownAliasListsKnown(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, workspaceTypeSpec, workspaceTarget)
+	t.Chdir(repo)
+
+	_, err := run(t, "repo", "nosuch", "setup")
+	if err == nil || !strings.Contains(err.Error(), `unknown repo target "nosuch"`) ||
+		!strings.Contains(err.Error(), "python") {
+		t.Fatalf("error = %v, want unknown-alias error listing aliases", err)
+	}
+}
+
+func TestRepoUnknownTargetListsTargets(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, workspaceTypeSpec, workspaceTarget)
+	t.Chdir(repo)
+
+	_, err := run(t, "repo", "python", "nosuch")
+	if err == nil || !strings.Contains(err.Error(), `has no target "nosuch"`) ||
+		!strings.Contains(err.Error(), "clean, setup") {
+		t.Fatalf("error = %v, want unknown-target error listing targets", err)
+	}
+}
+
+func TestRepoNoAttachments(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, nil)
+	t.Chdir(repo)
+
+	out, err := run(t, "repo")
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	if !strings.Contains(out, "no repo targets defined") ||
+		!strings.Contains(out, "repo_targets") {
+		t.Errorf("output = %q, want helpful no-attachments message", out)
+	}
+}
+
+// TestRepoReservedNamespaceShadowsRoot: "repo" dispatches to attachments
+// even when a project_root directory is literally named "repo".
+func TestRepoReservedNamespaceShadowsRoot(t *testing.T) {
+	home := setupHome(t)
+	repo := t.TempDir()
+	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+		"repo/inner": {name: "inner", typ: "mock/std/lib@1"},
+	}, nil, workspaceTarget)
+	// Declare a "repo" project root (shadowed by the synthetic namespace).
+	repoYMLPath := filepath.Join(repo, ".smith", "repo.yml")
+	data, err := os.ReadFile(repoYMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := strings.Replace(string(data), "    - services\n", "    - services\n    - repo\n", 1)
+	if replaced == string(data) {
+		t.Fatal("test setup: - services root not found in repo.yml")
+	}
+	if err := os.WriteFile(repoYMLPath, []byte(replaced), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	out, err := run(t, "repo")
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	if out != "python\n" {
+		t.Errorf("output = %q, want attachments (synthetic namespace wins)", out)
 	}
 }

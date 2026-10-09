@@ -47,6 +47,33 @@
           "uniqueItems": true
         }
       }
+    },
+    "repo_targets": {
+      "description": "Repo-level targets (\"attachments\"): named aliases bound to repo/<flavor>/<kind>@<version> types, run via `smith repo <name> <target>`. The alias is the grammar keyword. Declarative only — no inline commands; attachments cannot depend on projects (yet).",
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]*$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "pattern": "^repo/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*@[1-9][0-9]*$",
+              "description": "Attachment type ref; repo/<flavor>/<kind>@<version> only — attachments never use project types."
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "environment": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

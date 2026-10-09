@@ -84,6 +84,16 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			yaml: "version: 1\nname: demo\nregistries:\n  - name: cliwright\n    types: {git: https://example.com/types}\n    templates: {git: https://example.com/templates}\nworkspace:\n  project_roots: [/etc]\n",
 			want: "project_roots",
 		},
+		{
+			name: "repo_targets type must be repo/*",
+			yaml: "version: 1\nname: demo\nregistries:\n  - name: cliwright\n    types: {git: https://example.com/types}\n    templates: {git: https://example.com/templates}\nworkspace:\n  project_roots: [libs]\nrepo_targets:\n  python:\n    type: python/astral/lib@1\n",
+			want: "repo_targets",
+		},
+		{
+			name: "repo_targets entry is closed",
+			yaml: "version: 1\nname: demo\nregistries:\n  - name: cliwright\n    types: {git: https://example.com/types}\n    templates: {git: https://example.com/templates}\nworkspace:\n  project_roots: [libs]\nrepo_targets:\n  python:\n    type: repo/uv/workspace@1\n    commands: [make setup]\n",
+			want: "repo_targets",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,6 +112,60 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 				t.Errorf("Load(%q) error = %q, want it to name the schema", path, err)
 			}
 		})
+	}
+}
+
+// TestLoadRepoTargets covers the attachment config: aliases bound to
+// repo/<flavor>/<kind>@<version> types, with optional params/environment.
+func TestLoadRepoTargets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repo.yml")
+	yaml := "version: 1\nname: demo\n" +
+		"registries:\n" +
+		"  - name: cliwright\n" +
+		"    types: {git: https://example.com/types}\n" +
+		"    templates: {git: https://example.com/templates}\n" +
+		"workspace:\n  project_roots: [libs]\n" +
+		"repo_targets:\n" +
+		"  python:\n" +
+		"    type: repo/uv/workspace@1\n" +
+		"    params:\n" +
+		"      extras: dev\n" +
+		"    environment:\n" +
+		"      UV_FROZEN: \"1\"\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q): %v", path, err)
+	}
+	rt, ok := cfg.RepoTargets["python"]
+	if !ok {
+		t.Fatalf("RepoTargets missing %q: %+v", "python", cfg.RepoTargets)
+	}
+	if rt.Type != "repo/uv/workspace@1" {
+		t.Errorf("Type = %q", rt.Type)
+	}
+	if rt.Params["extras"] != "dev" || rt.Environment["UV_FROZEN"] != "1" {
+		t.Errorf("attachment params/env = %+v / %+v", rt.Params, rt.Environment)
+	}
+}
+
+// TestValidateRepoTargets exercises the loader backstop directly: even a doc
+// that somehow passed the schema with a non-repo/* attachment type is
+// rejected at load with the loud message.
+func TestValidateRepoTargets(t *testing.T) {
+	cfg := &RepoConfig{RepoTargets: map[string]RepoTarget{
+		"python": {Type: "python/astral/lib@1"},
+	}}
+	err := validateRepoTargets(cfg)
+	if err == nil || !strings.Contains(err.Error(), "repo_targets entries must use repo/<flavor>/<kind>@<version> types, got \"python/astral/lib@1\"") {
+		t.Fatalf("validateRepoTargets = %v, want the loud constraint error", err)
+	}
+	if err := validateRepoTargets(&RepoConfig{RepoTargets: map[string]RepoTarget{
+		"python": {Type: "repo/uv/workspace@1"},
+	}}); err != nil {
+		t.Fatalf("validateRepoTargets = %v, want nil for a repo/* type", err)
 	}
 }
 

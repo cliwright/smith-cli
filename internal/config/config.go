@@ -11,9 +11,11 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/cliwright/smith/internal/typeref"
 	"github.com/cliwright/smith/internal/validate"
 )
 
@@ -24,8 +26,20 @@ type RepoConfig struct {
 	Registries []Registry `json:"registries" yaml:"registries"`
 	Tools      []string   `json:"tools,omitempty" yaml:"tools,omitempty"`
 	Workspace  Workspace  `json:"workspace" yaml:"workspace"`
+	// RepoTargets are repo-level targets ("attachments"): named aliases bound
+	// to repo/<flavor>/<kind>@<version> types, run via `smith repo <name>
+	// <target>`. The alias is the grammar keyword.
+	RepoTargets map[string]RepoTarget `json:"repo_targets,omitempty" yaml:"repo_targets,omitempty"`
 
 	node *yaml.Node
+}
+
+// RepoTarget is one attachment: a type ref plus optional params and
+// environment, both shaped like their manifest counterparts.
+type RepoTarget struct {
+	Type        string            `json:"type" yaml:"type"`
+	Params      map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
+	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
 }
 
 // Registry is one registry source pair, in priority order: the first
@@ -66,8 +80,25 @@ func Load(path string) (*RepoConfig, error) {
 	if err := node.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("decoding %s: %w", path, err)
 	}
+	if err := validateRepoTargets(&cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	cfg.node = &node
 	return &cfg, nil
+}
+
+// validateRepoTargets enforces the attachment constraint at load:
+// repo_targets entries must bind repo/<flavor>/<kind>@<version> types. The
+// schema pattern already rejects anything else; this is the loud,
+// human-readable backstop.
+func validateRepoTargets(cfg *RepoConfig) error {
+	for alias, target := range cfg.RepoTargets {
+		ref, err := typeref.Parse(target.Type)
+		if err != nil || !strings.HasPrefix(ref.Name, "repo/") {
+			return fmt.Errorf("repo_targets entries must use repo/<flavor>/<kind>@<version> types, got %q (alias %q)", target.Type, alias)
+		}
+	}
+	return nil
 }
 
 // Save renders cfg with Marshal and writes it to path.

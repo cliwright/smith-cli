@@ -14,6 +14,7 @@ import (
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/discovery"
 	"github.com/cliwright/smith/internal/lock"
+	"github.com/cliwright/smith/internal/manifest"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/runner"
 	"github.com/cliwright/smith/internal/targetrun"
@@ -167,6 +168,96 @@ func projectNames(projects []discovery.Project) []string {
 		names[i] = p.Manifest.Name
 	}
 	return names
+}
+
+// attachments models repo-level targets (repo_targets) as synthetic
+// projects: an in-memory manifest named by the alias with the repo root as
+// its directory, routed through the ordinary targetrun machinery. Sorted by
+// alias.
+func (rc *repoContext) attachments() []discovery.Project {
+	aliases := make([]string, 0, len(rc.cfg.RepoTargets))
+	for alias := range rc.cfg.RepoTargets {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	out := make([]discovery.Project, 0, len(aliases))
+	for _, alias := range aliases {
+		rt := rc.cfg.RepoTargets[alias]
+		out = append(out, discovery.Project{
+			Dir: ".",
+			Manifest: &manifest.Manifest{
+				Name:        alias,
+				Type:        rt.Type,
+				Params:      rt.Params,
+				Environment: rt.Environment,
+			},
+		})
+	}
+	return out
+}
+
+// dispatchRepo handles "smith repo ..." — the synthetic namespace backed by
+// repo_targets (attachments are not discovered directories):
+//
+//	smith repo                 list attachments (same as "repo list")
+//	smith repo list            list attachments
+//	smith repo <name>          list that attachment's targets
+//	smith repo <name> <target> run target on the attachment
+//
+// Unlike directory namespaces there is no repo-wide attachment run (bare
+// `smith <target>` never includes attachments), so position 2 always names
+// an attachment here.
+func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
+	out := stdout(cmd)
+	attachments := rc.attachments()
+
+	if len(rest) == 0 || (rest[0] == "list" && len(rest) == 1) {
+		if len(attachments) == 0 {
+			fmt.Fprintf(out, "no repo targets defined; add a repo_targets entry to %s\n",
+				filepath.Join(cacheDirName, repoYMLName))
+			return nil
+		}
+		for _, a := range attachments {
+			fmt.Fprintln(out, a.Manifest.Name)
+		}
+		return nil
+	}
+	if rest[0] == "list" {
+		return fmt.Errorf("list takes no further arguments")
+	}
+
+	att, ok := projectByName(attachments, rest[0])
+	if !ok {
+		if len(attachments) == 0 {
+			return fmt.Errorf("unknown repo target %q (no repo targets defined; add a repo_targets entry to %s)",
+				rest[0], filepath.Join(cacheDirName, repoYMLName))
+		}
+		return fmt.Errorf("unknown repo target %q (repo targets: %s)",
+			rest[0], strings.Join(projectNames(attachments), ", "))
+	}
+
+	if len(rest) == 1 {
+		return rc.listTargets(cmd, att)
+	}
+	if len(rest) > 2 {
+		return fmt.Errorf("too many arguments: %s", strings.Join(rest, " "))
+	}
+
+	t, err := rc.typeFor(att)
+	if err != nil {
+		return err
+	}
+	if _, ok := t.Targets[rest[1]]; !ok {
+		return fmt.Errorf("repo target %q (type %s@%d) has no target %q (targets: %s)",
+			att.Manifest.Name, t.Name, t.Version, rest[1], strings.Join(sortedKeys(t.Targets), ", "))
+	}
+	warnParallel(cmd)
+	plan, err := targetrun.Build([]discovery.Project{att}, rc.typeFor,
+		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot)
+	if err != nil {
+		return err
+	}
+	return plan.Execute(context.Background(), nsExecRunner, rc.repoRoot, stdout(cmd))
 }
 
 // dispatchNamespace handles "smith <ns> ..." — the confirmed grammar:

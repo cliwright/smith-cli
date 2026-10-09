@@ -35,4 +35,14 @@ workspace:
     - tools
     - services
     - images
+
+# Repo-level targets ("attachments"): named aliases bound to
+# repo/<flavor>/<kind>@<version> types, run as `smith repo <name> <target>`.
+# The alias is the grammar keyword; `repo` is a RESERVED namespace (a
+# project_root literally named "repo" is shadowed). repo.yml stays
+# declarative — no inline commands. `smith sync` fetches and pins the types;
+# `smith tree` shows a synthetic `repo` node.
+#repo_targets:
+#  python:
+#    type: repo/uv/workspace@1
     - infra

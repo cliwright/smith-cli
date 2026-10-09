@@ -345,6 +345,62 @@ func TestSyncNoRefsNoop(t *testing.T) {
 	}
 }
 
+// TestSyncUnionsAttachmentTypes: repo_targets types join the manifest-derived
+// fetch set and are pinned in the lock like any other type.
+func TestSyncUnionsAttachmentTypes(t *testing.T) {
+	home := setupHome(t)
+	f := newFakeRegistries(t)
+	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType("cliwright/types", "repo/uv/workspace", 1, `{"name":"repo/uv/workspace","version":1,"description":"uv workspace root environment","tools":["uv"],"targets":{"setup":["uv venv"]}}`)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	smithDir := filepath.Join(repo, ".smith")
+	if err := os.MkdirAll(smithDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoYML := "version: 1\nname: mock\n" +
+		"registries:\n" +
+		"  - name: cliwright\n" +
+		"    types: {git: https://github.com/cliwright/types}\n" +
+		"    templates: {git: https://github.com/cliwright/templates}\n" +
+		"workspace:\n  project_roots:\n    - libs\n" +
+		"repo_targets:\n" +
+		"  python:\n" +
+		"    type: repo/uv/workspace@1\n"
+	if err := os.WriteFile(filepath.Join(smithDir, "repo.yml"), []byte(repoYML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "libs", "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "version: 1\nname: demo\ntype: python/astral/lib@1\n"
+	if err := os.WriteFile(filepath.Join(repo, "libs", "demo", "smith.yml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	out, err := run(t, "sync")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatalf("lock.Load: %v", err)
+	}
+	if lk.Types["python/astral/lib@1"].Registry != "cliwright" {
+		t.Errorf("lib pin = %+v", lk.Types["python/astral/lib@1"])
+	}
+	attPin, ok := lk.Types["repo/uv/workspace@1"]
+	if !ok || attPin.Registry != "cliwright" {
+		t.Errorf("attachment pin = %+v (present %v)", attPin, ok)
+	}
+	if _, err := os.Stat(installedPath(home, "repo/uv/workspace@v1")); err != nil {
+		t.Errorf("attachment type not installed: %v", err)
+	}
+}
+
 func TestSyncOutsideRepo(t *testing.T) {
 	setupHome(t)
 	t.Chdir(t.TempDir())

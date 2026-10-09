@@ -131,6 +131,35 @@ func TestRenderTreeMultiDeps(t *testing.T) {
 	}
 }
 
+// TestRenderTreeRepoTargets pins the synthetic repo node: it lists each
+// attachment alias annotated with its type, after the directory roots.
+func TestRenderTreeRepoTargets(t *testing.T) {
+	cfg := &config.RepoConfig{
+		Workspace: config.Workspace{ProjectRoots: []string{"libs"}},
+		RepoTargets: map[string]config.RepoTarget{
+			"python": {Type: "repo/uv/workspace@1"},
+		},
+	}
+	projects := []discovery.Project{
+		project("libs/alpha", "alpha", "mock/std/lib@1"),
+	}
+
+	var buf bytes.Buffer
+	if err := renderTree(&buf, "demo", cfg, projects); err != nil {
+		t.Fatalf("renderTree: %v", err)
+	}
+
+	want := `demo
+├── libs
+│   └── alpha   (mock/std/lib@1)
+└── repo
+    └── python   (repo/uv/workspace@1)
+`
+	if buf.String() != want {
+		t.Errorf("renderTree output mismatch:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
 func TestRenderTreeProjectAtRoot(t *testing.T) {
 	cfg := &config.RepoConfig{
 		Workspace: config.Workspace{ProjectRoots: []string{"libs"}},

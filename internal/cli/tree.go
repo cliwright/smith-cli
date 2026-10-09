@@ -69,11 +69,13 @@ func runTree(cmd *cobra.Command) error {
 }
 
 // treeNode is one directory in the rendered tree. project is set when the
-// directory holds a smith.yml.
+// directory holds a smith.yml. synthetic marks the repo node that carries
+// repo-level targets (attachments): it sorts after every real root.
 type treeNode struct {
-	name     string
-	project  *discovery.Project
-	children map[string]*treeNode
+	name      string
+	project   *discovery.Project
+	synthetic bool
+	children  map[string]*treeNode
 }
 
 func newTreeNode(name string) *treeNode {
@@ -109,6 +111,23 @@ func renderTree(w io.Writer, repoName string, cfg *config.RepoConfig, projects [
 		node.project = &projects[i]
 	}
 
+	// Synthetic repo node for repo-level targets (attachments), after the
+	// directory roots; omitted when repo_targets is empty.
+	if len(cfg.RepoTargets) > 0 {
+		repoNode := insert("repo")
+		repoNode.synthetic = true
+		for alias, rt := range cfg.RepoTargets {
+			child := getChild(repoNode, alias)
+			child.project = &discovery.Project{
+				Dir: ".",
+				Manifest: &manifest.Manifest{
+					Name: alias, Type: rt.Type,
+					Params: rt.Params, Environment: rt.Environment,
+				},
+			}
+		}
+	}
+
 	fmt.Fprintln(w, repoName)
 	renderChildren(w, root, "")
 	return nil
@@ -119,7 +138,12 @@ func renderChildren(w io.Writer, parent *treeNode, prefix string) {
 	for _, child := range parent.children {
 		kids = append(kids, child)
 	}
-	sort.Slice(kids, func(i, j int) bool { return kids[i].name < kids[j].name })
+	sort.Slice(kids, func(i, j int) bool {
+		if kids[i].synthetic != kids[j].synthetic {
+			return !kids[i].synthetic // synthetic (repo) node sorts last
+		}
+		return kids[i].name < kids[j].name
+	})
 
 	maxLen := 0
 	for _, child := range kids {

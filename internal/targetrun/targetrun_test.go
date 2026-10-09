@@ -535,3 +535,91 @@ func TestBuildPhaseARejectsUnknownVar(t *testing.T) {
 		t.Fatalf("Build error = %v, want the unknown-computed-var hard error", err)
 	}
 }
+
+// TestAttachmentClosureAndComputedVars: an attachment is a synthetic project
+// (dir = repo root) routed through the ordinary machinery — type-level
+// closure, two-phase params, and computed vars all apply.
+func TestAttachmentClosureAndComputedVars(t *testing.T) {
+	attachment := discovery.Project{
+		Dir: ".",
+		Manifest: &manifest.Manifest{
+			Name:   "python",
+			Type:   "repo/uv/workspace@1",
+			Params: map[string]string{"extras": "{{.SMITH_PROJECT}}-extras"},
+		},
+	}
+	types := map[string]*projecttype.ProjectType{
+		"python": {
+			Name: "repo/uv/workspace", Version: 1, Description: "x", Tools: []string{"sh"},
+			Params:     map[string]projecttype.Param{"extras": {Default: "dev"}},
+			Targets:    map[string][]string{"setup": {"echo setup {{.extras}} {{.SMITH_PROJECT}} {{.SMITH_PROJECT_DIR}}"}, "fetch": {"echo fetch"}},
+			DependsOn:  map[string][]string{"setup": {"fetch"}},
+			WorkingDir: projecttype.WorkingDirProject,
+		},
+	}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := &fakeRunner{}
+	if err := plan.Execute(context.Background(), f, "/repo", &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := stepsOf(f.runs)
+	want := []string{"echo fetch", "echo setup python-extras python /repo"}
+	if !slices.Equal(got, want) {
+		t.Errorf("steps = %v, want %v", got, want)
+	}
+	for i, run := range f.runs {
+		if run.dir != "/repo" {
+			t.Errorf("attachment step %d ran in %q, want repo root", i, run.dir)
+		}
+	}
+}
+
+// TestAttachmentRealShell runs real shell steps for an attachment: computed
+// vars and layered env land in the subprocess, cwd is the repo root.
+func TestAttachmentRealShell(t *testing.T) {
+	dir := t.TempDir()
+	markers := filepath.Join(dir, "markers")
+
+	attachment := discovery.Project{
+		Dir: ".",
+		Manifest: &manifest.Manifest{
+			Name:        "python",
+			Type:        "repo/uv/workspace@1",
+			Environment: map[string]string{"LAYER": "manifest"},
+		},
+	}
+	types := map[string]*projecttype.ProjectType{
+		"python": {
+			Name: "repo/uv/workspace", Version: 1, Description: "x", Tools: []string{"sh"},
+			Environment: map[string]string{"LAYER": "type"},
+			Targets: map[string][]string{
+				// SMITH_PROJECT_DIR is template-only (not an env var), so it
+				// is rendered into the command; LAYER comes from the env.
+				"setup": {fmt.Sprintf(`echo "$SMITH_PROJECT|{{.SMITH_PROJECT_DIR}}|$LAYER" >> %s`, markers)},
+			},
+			WorkingDir: projecttype.WorkingDirProject,
+		},
+	}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := plan.Execute(context.Background(), runner.Default, dir, &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	data, err := os.ReadFile(markers)
+	if err != nil {
+		t.Fatalf("markers: %v", err)
+	}
+	want := fmt.Sprintf("python|%s|manifest\n", dir)
+	if string(data) != want {
+		t.Errorf("markers = %q, want %q", data, want)
+	}
+}

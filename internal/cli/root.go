@@ -67,6 +67,11 @@ func dispatch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// "repo" is a RESERVED namespace: the synthetic attachments namespace
+	// shadows any project_root directory literally named "repo".
+	if args[0] == "repo" {
+		return rc.dispatchRepo(cmd, args[1:])
+	}
 	if slices.Contains(rc.namespaces(), args[0]) {
 		return rc.dispatchNamespace(cmd, args[0], args[1:])
 	}
