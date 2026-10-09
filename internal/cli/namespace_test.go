@@ -557,6 +557,15 @@ func TestRepoListsAttachmentTargets(t *testing.T) {
 	if out != "clean\nsetup\n" {
 		t.Errorf("targets = %q, want clean/setup sorted", out)
 	}
+
+	// "list" is reserved in target position, mirroring project namespaces.
+	out, err = run(t, "repo", "python", "list")
+	if err != nil {
+		t.Fatalf("repo python list: %v", err)
+	}
+	if out != "clean\nsetup\n" {
+		t.Errorf("targets via list = %q, want clean/setup sorted", out)
+	}
 }
 
 func TestRepoRunsAttachmentAtRepoRoot(t *testing.T) {

@@ -202,6 +202,7 @@ func (rc *repoContext) attachments() []discovery.Project {
 //	smith repo                 list attachments (same as "repo list")
 //	smith repo list            list attachments
 //	smith repo <name>          list that attachment's targets
+//	smith repo <name> list     list that attachment's targets (reserved word, like project namespaces)
 //	smith repo <name> <target> run target on the attachment
 //
 // Unlike directory namespaces there is no repo-wide attachment run (bare
@@ -241,6 +242,9 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	}
 	if len(rest) > 2 {
 		return fmt.Errorf("too many arguments: %s", strings.Join(rest, " "))
+	}
+	if rest[1] == "list" {
+		return rc.listTargets(cmd, att)
 	}
 
 	t, err := rc.typeFor(att)
