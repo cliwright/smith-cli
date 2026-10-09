@@ -31,6 +31,10 @@ namespace's projects. See "smith help" for the full grammar.`,
 		Args:    cobra.ArbitraryArgs,
 		RunE:    dispatch,
 		Version: "0.0.0",
+		// Errors are self-descriptive (they list available targets,
+		// attachments, or suggest `smith sync`); a runtime failure is not a
+		// usage mistake, so never dump the command tree after one.
+		SilenceUsage: true,
 	}
 	root.PersistentFlags().IntP("parallel", "p", 1,
 		"run N targets concurrently (default 1 = serial, deterministic output)")

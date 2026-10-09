@@ -31,10 +31,10 @@ func TestRootHelpListsCommandTree(t *testing.T) {
 }
 
 func TestSubcommandStubs(t *testing.T) {
-	// init, tree, sync, new and doctor are implemented (see their test files)
-	// and must not run against the package directory, so they are not in this
-	// list.
-	for _, cmd := range []string{"types", "list"} {
+	// types is the only stub left (see commands.go); the rest are
+	// implemented in their own files and run against a repo, so they are not
+	// in this list.
+	for _, cmd := range []string{"types"} {
 		t.Run(cmd, func(t *testing.T) {
 			out, err := run(t, cmd)
 			if err != nil {
@@ -56,16 +56,24 @@ func TestUnknownCommand(t *testing.T) {
 		"libs/only": {"only", "python/astral/lib@1"},
 	})
 	t.Chdir(repo)
-	_, err := run(t, "frobnicate", "extra")
+	out, err := run(t, "frobnicate", "extra")
 	if err == nil {
 		t.Fatal("frobnicate extra: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), `unknown command "frobnicate"`) {
 		t.Errorf("error = %v", err)
 	}
+	// Errors must not be followed by the usage dump: a failure is not a
+	// usage mistake, and runtime failures (target exits) flow through the
+	// same root dispatch.
+	if strings.Contains(out, "Usage:") {
+		t.Errorf("output after error contains usage dump:\n%s", out)
+	}
 }
 
 func TestParallelFlag(t *testing.T) {
+	repo := buildMockRepo(t, []string{"libs"}, nil)
+	t.Chdir(repo)
 	cmd := newRootCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
