@@ -51,6 +51,12 @@ func TestLoad(t *testing.T) {
 					!slices.Equal(override.Before, []string{"test"}) {
 					t.Errorf("override dep = %+v", override)
 				}
+				if got := m.Params["config_path"]; got != "ci/pyproject.toml" {
+					t.Errorf("params[config_path] = %q", got)
+				}
+				if got := m.Environment["PYTHONWARNDEFAULTENCODING"]; got != "1" {
+					t.Errorf("environment = %v", m.Environment)
+				}
 			},
 		},
 	}
@@ -86,6 +92,16 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			name: "bad project name in sugar form",
 			yaml: valid + "depends_on:\n  - Auth\n",
 			want: "depends_on",
+		},
+		{
+			name: "param value must be a string",
+			yaml: valid + "params:\n  config_path: [pyproject.toml]\n",
+			want: "params",
+		},
+		{
+			name: "environment value must be a string",
+			yaml: valid + "environment:\n  DEBUG: 3\n",
+			want: "environment",
 		},
 	}
 	for _, tt := range tests {

@@ -3,6 +3,7 @@ package targetrun
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 type recordedRun struct {
 	dir  string
 	step string
+	env  []string
 }
 
 // fakeRunner records every step; steps equal to failOn error out.
@@ -27,7 +29,7 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(_ context.Context, opts runner.Options, _ string, args ...string) error {
 	step := args[1]
-	f.runs = append(f.runs, recordedRun{dir: opts.Dir, step: step})
+	f.runs = append(f.runs, recordedRun{dir: opts.Dir, step: step, env: opts.Env})
 	if step == f.failOn {
 		return fmt.Errorf("exited with status 3")
 	}
@@ -38,6 +40,16 @@ func mkProject(dir, name, typ string, deps ...manifest.Dependency) discovery.Pro
 	return discovery.Project{
 		Dir:      dir,
 		Manifest: &manifest.Manifest{Name: name, Type: typ, DependsOn: deps},
+	}
+}
+
+func mkProjectFull(dir, name, typ string, params, env map[string]string, deps ...manifest.Dependency) discovery.Project {
+	return discovery.Project{
+		Dir: dir,
+		Manifest: &manifest.Manifest{
+			Name: name, Type: typ, DependsOn: deps,
+			Params: params, Environment: env,
+		},
 	}
 }
 
@@ -246,5 +258,170 @@ func TestExecuteWorkingDir(t *testing.T) {
 	}
 	if got, want := byStep["echo p"], filepath.Join("/repo", "libs", "projjob"); got != want {
 		t.Errorf("working_dir project ran in %q, want %q", got, want)
+	}
+}
+
+func TestBuildRejectsUndeclaredManifestParam(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectFull("libs/alpha", "alpha", "mock/lib@1", map[string]string{"speed": "fast"}, nil),
+	}
+	types := map[string]*projecttype.ProjectType{
+		"alpha": {
+			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
+			Targets:    map[string][]string{"build": {"echo ok"}},
+			WorkingDir: projecttype.WorkingDirProject,
+		},
+	}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}})
+	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/lib@1) sets param "speed", which the type does not declare`) {
+		t.Fatalf("Build error = %v, want undeclared-param error naming project, key, and type", err)
+	}
+}
+
+func TestExecuteRendersStepsWithOverrides(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+			map[string]string{"greeting": "hi there"}, nil),
+		mkProject("libs/beta", "beta", "mock/lib@1"),
+	}
+	greetingType := func() *projecttype.ProjectType {
+		return &projecttype.ProjectType{
+			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Params:     map[string]projecttype.Param{"greeting": {Default: "hello"}},
+			Targets:    map[string][]string{"build": {`echo '{{.greeting}} world'`}},
+			WorkingDir: projecttype.WorkingDirProject,
+		}
+	}
+	types := map[string]*projecttype.ProjectType{"alpha": greetingType(), "beta": greetingType()}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := &fakeRunner{}
+	if err := plan.Execute(context.Background(), f, "/repo", &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := stepsOf(f.runs)
+	// The manifest override lands inside the author's single quotes; the
+	// project without an override renders the default.
+	want := []string{"echo 'hi there world'", "echo 'hello world'"}
+	if !slices.Equal(got, want) {
+		t.Errorf("rendered steps = %v, want %v", got, want)
+	}
+}
+
+// lastEnvValue returns the effective value of key (the last occurrence wins,
+// matching exec.Cmd semantics).
+func lastEnvValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	value := ""
+	found := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			value = strings.TrimPrefix(entry, prefix)
+			found = true
+		}
+	}
+	return value, found
+}
+
+func TestExecuteEnvPrecedence(t *testing.T) {
+	t.Setenv("MOCK_LEVEL", "base")
+
+	projects := []discovery.Project{
+		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+			map[string]string{"config_path": "ci.toml"},
+			map[string]string{
+				"MOCK_LEVEL":    "manifest",
+				"TEMPLATE_VAR":  "man={{.config_path}}",
+				"SMITH_PROJECT": "shadow-attempt",
+			}),
+	}
+	types := map[string]*projecttype.ProjectType{
+		"alpha": {
+			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Params:      map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
+			Environment: map[string]string{"MOCK_LEVEL": "type", "TEMPLATE_VAR": "cfg={{.config_path}}"},
+			Targets:     map[string][]string{"build": {"echo ok"}},
+			WorkingDir:  projecttype.WorkingDirProject,
+		},
+	}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := &fakeRunner{}
+	if err := plan.Execute(context.Background(), f, "/repo", &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(f.runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(f.runs))
+	}
+	env := f.runs[0].env
+
+	if got, _ := lastEnvValue(env, "MOCK_LEVEL"); got != "manifest" {
+		t.Errorf("MOCK_LEVEL = %q, want manifest (base < type < manifest)", got)
+	}
+	if got, _ := lastEnvValue(env, "TEMPLATE_VAR"); got != "man=ci.toml" {
+		t.Errorf("TEMPLATE_VAR = %q, want man=ci.toml (manifest layer, rendered with merged params)", got)
+	}
+	if got, ok := lastEnvValue(env, "SMITH_PROJECT"); !ok || got != "alpha" {
+		t.Errorf("SMITH_PROJECT = %q (present %v), want alpha — computed vars cannot be shadowed", got, ok)
+	}
+	if got, ok := lastEnvValue(env, "SMITH_TARGET"); !ok || got != "build" {
+		t.Errorf("SMITH_TARGET = %q, want build", got)
+	}
+	if got, ok := lastEnvValue(env, "SMITH_REPO_ROOT"); !ok || got != "/repo" {
+		t.Errorf("SMITH_REPO_ROOT = %q, want absolute /repo", got)
+	}
+}
+
+// TestExecuteRealShellEnv runs real shell steps to prove the rendered
+// environment actually arrives in the subprocess.
+func TestExecuteRealShellEnv(t *testing.T) {
+	dir := t.TempDir()
+	markers := filepath.Join(dir, "markers")
+
+	projects := []discovery.Project{
+		mkProjectFull("proj", "alpha", "mock/lib@1",
+			map[string]string{"suffix": "ok"},
+			map[string]string{"EXTRA": "manifest-layer"}),
+	}
+	types := map[string]*projecttype.ProjectType{
+		"alpha": {
+			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Params:      map[string]projecttype.Param{"suffix": {Default: "ok"}},
+			Environment: map[string]string{"EXTRA": "type-layer", "TEMPLATED": "cfg-{{.suffix}}"},
+			Targets: map[string][]string{
+				"build": {fmt.Sprintf(`echo "$SMITH_PROJECT:$SMITH_TARGET:$EXTRA:$TEMPLATED" >> %s`, markers)},
+			},
+			WorkingDir: projecttype.WorkingDirProject,
+		},
+	}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Execute(context.Background(), runner.Default, dir, &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	data, err := os.ReadFile(markers)
+	if err != nil {
+		t.Fatalf("markers: %v", err)
+	}
+	if got, want := string(data), "alpha:build:manifest-layer:cfg-ok\n"; got != want {
+		t.Errorf("markers = %q, want %q", got, want)
 	}
 }

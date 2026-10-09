@@ -59,6 +59,16 @@
           }
         ]
       }
+    },
+    "params": {
+      "description": "Values for params the project type declares. Keys not declared by the type are a hard error at execution time.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "environment": {
+      "description": "Extra environment variables for this project's target steps. Values are Go templates over the merged params; overrides the type's environment.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
     }
   }
 }

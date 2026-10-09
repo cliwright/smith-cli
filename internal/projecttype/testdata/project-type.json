@@ -9,10 +9,21 @@
 
   "working_dir": "project",
 
+  "params": {
+    "config_path": {
+      "default": "pyproject.toml",
+      "description": "ruff/pytest config location"
+    }
+  },
+
+  "environment": {
+    "PYTHONUNBUFFERED": "1"
+  },
+
   "targets": {
-    "lint":   ["uv run ruff check ."],
-    "format": ["uv run ruff format ."],
-    "test":   ["uv run pytest"],
+    "lint":   ["uv run ruff check --config '{{.config_path}}' ."],
+    "format": ["uv run ruff format --config '{{.config_path}}' ."],
+    "test":   ["uv run pytest -c '{{.config_path}}'"],
     "build":  ["uv build"],
     "clean":  ["rm -rf dist .venv"]
   },

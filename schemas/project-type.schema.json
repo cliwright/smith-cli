@@ -79,6 +79,27 @@
         }
       },
       "additionalProperties": false
+    },
+    "params": {
+      "description": "Params this type exposes to its steps and environment values via {{.name}} templates. Defaults are required; manifests may override.",
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]*$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default"],
+          "properties": {
+            "default": { "type": "string" },
+            "description": { "type": "string" }
+          }
+        }
+      }
+    },
+    "environment": {
+      "description": "Environment variables for this type's target steps. Values are Go templates over the merged params (type defaults <- manifest overrides).",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
     }
   }
 }

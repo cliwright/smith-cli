@@ -27,3 +27,15 @@ depends_on:
   - project: auth
     targets: [run]
     before: [test]
+
+# Optional. Values for params the project type declares (see its
+# project-type.json). Keys must be declared by the type — an undeclared key
+# is a hard error when a target runs. Overrides the type's default.
+params:
+  config_path: ci/pyproject.toml
+
+# Optional. Extra environment variables for this project's target steps.
+# Values are Go templates over the merged params ({{.config_path}}) and
+# override type-level variables of the same name.
+environment:
+  PYTHONWARNDEFAULTENCODING: "1"

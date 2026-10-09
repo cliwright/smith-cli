@@ -22,10 +22,14 @@ const defaultTarget = "build"
 
 // Manifest is the typed view of smith.yml.
 type Manifest struct {
-	Version   int          `json:"version" yaml:"version"`
-	Name      string       `json:"name" yaml:"name"`
-	Type      string       `json:"type" yaml:"type"`
-	DependsOn []Dependency `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+	Version   int               `json:"version" yaml:"version"`
+	Name      string            `json:"name" yaml:"name"`
+	Type      string            `json:"type" yaml:"type"`
+	DependsOn []Dependency      `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+	Params    map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
+	// Environment extras for this project's target steps; values are Go
+	// templates over the merged params.
+	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
 
 	node *yaml.Node
 }

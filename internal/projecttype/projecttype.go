@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"text/template"
 
 	"github.com/cliwright/smith/internal/validate"
 )
@@ -22,6 +24,17 @@ type ProjectType struct {
 	WorkingDir   WorkingDir          `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
 	Targets      map[string][]string `json:"targets" yaml:"targets"`
 	DependsOn    map[string][]string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+	// Params this type declares; steps and environment values are Go
+	// templates over the merged params ({{.name}}).
+	Params      map[string]Param  `json:"params,omitempty" yaml:"params,omitempty"`
+	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
+}
+
+// Param is one declared type param: a required default and an optional
+// description for type browsers.
+type Param struct {
+	Default     string `json:"default" yaml:"default"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 // Capability is what a project of this type can do, independent of how.
@@ -71,7 +84,59 @@ func Load(path string) (*ProjectType, error) {
 	if pt.WorkingDir == "" {
 		pt.WorkingDir = WorkingDirProject
 	}
+	if err := pt.validateTemplates(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &pt, nil
+}
+
+// RenderTemplate renders one Go text/template against a flat params map with
+// missingkey=error: an undefined key (a typo'd {{.name}}) is an error, never
+// a silent empty string.
+func RenderTemplate(text string, params map[string]string) (string, error) {
+	tmpl, err := template.New("smith").Option("missingkey=error").Parse(text)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, params); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// Defaults returns the declared default params.
+func (pt *ProjectType) Defaults() map[string]string {
+	defaults := make(map[string]string, len(pt.Params))
+	for key, param := range pt.Params {
+		defaults[key] = param.Default
+	}
+	return defaults
+}
+
+// validateTemplates dry-renders every step and environment value against the
+// declared defaults, so a broken template fails at load (sync) time instead
+// of mid-run.
+func (pt *ProjectType) validateTemplates() error {
+	defaults := pt.Defaults()
+	for name, steps := range pt.Targets {
+		for i, step := range steps {
+			if _, err := RenderTemplate(step, defaults); err != nil {
+				return fmt.Errorf("type %s@%d: target %q step %d: %w", pt.Name, pt.Version, name, i+1, err)
+			}
+		}
+	}
+	keys := make([]string, 0, len(pt.Environment))
+	for key := range pt.Environment {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, err := RenderTemplate(pt.Environment[key], defaults); err != nil {
+			return fmt.Errorf("type %s@%d: environment %q: %w", pt.Name, pt.Version, key, err)
+		}
+	}
+	return nil
 }
 
 // Marshal renders pt as indented JSON with a trailing newline.

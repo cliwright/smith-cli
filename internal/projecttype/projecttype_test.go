@@ -41,11 +41,18 @@ func TestLoad(t *testing.T) {
 				if pt.WorkingDir != WorkingDirProject {
 					t.Errorf("WorkingDir = %q, want %q", pt.WorkingDir, WorkingDirProject)
 				}
-				if !slices.Equal(pt.Targets["test"], []string{"uv run pytest"}) {
+				if !slices.Equal(pt.Targets["test"], []string{"uv run pytest -c '{{.config_path}}'"}) {
 					t.Errorf("Targets[test] = %v", pt.Targets["test"])
 				}
 				if !slices.Equal(pt.DependsOn["build"], []string{"lint", "test"}) {
 					t.Errorf("DependsOn[build] = %v", pt.DependsOn["build"])
+				}
+				param, ok := pt.Params["config_path"]
+				if !ok || param.Default != "pyproject.toml" || param.Description != "ruff/pytest config location" {
+					t.Errorf("Params[config_path] = %+v", pt.Params)
+				}
+				if got := pt.Environment["PYTHONUNBUFFERED"]; got != "1" {
+					t.Errorf("Environment = %v", pt.Environment)
 				}
 			},
 		},
@@ -91,6 +98,31 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			name: "bad type name",
 			json: `{"name":"go//lib","version":1,"description":"x","tools":["go"],"targets":{"build":["go build ./..."]}}`,
 			want: "name",
+		},
+		{
+			name: "param missing required default",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo x"]},"params":{"config_path":{"description":"no default"}}}`,
+			want: "default",
+		},
+		{
+			name: "param with unknown inner key",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo x"]},"params":{"config_path":{"default":"x","unit":"parsec"}}}`,
+			want: "params",
+		},
+		{
+			name: "param value must be an object",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo x"]},"params":{"config_path":"pyproject.toml"}}`,
+			want: "params",
+		},
+		{
+			name: "param key must match the pattern",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo x"]},"params":{"ConfigPath":{"default":"x"}}}`,
+			want: "params",
+		},
+		{
+			name: "environment value must be a string",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo x"]},"environment":{"DEBUG":3}}`,
+			want: "environment",
 		},
 	}
 	for _, tt := range tests {
@@ -144,5 +176,73 @@ func TestSaveRoundTrip(t *testing.T) {
 		len(reloaded.Targets) != len(pt.Targets) ||
 		reloaded.Description != pt.Description {
 		t.Errorf("round trip = %+v, want %+v", reloaded, pt)
+	}
+}
+
+// TestLoadDryRendersTemplates covers the early validation: every step and
+// environment value must render against the declared defaults, so a broken
+// template fails at load (sync) time, not mid-run.
+func TestLoadDryRendersTemplates(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr string
+	}{
+		{
+			name:    "undefined template key in a step",
+			json:    `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"params":{"config_path":{"default":"pyproject.toml"}},"targets":{"build":["echo {{.config_pah}}"]}}`,
+			wantErr: "config_pah",
+		},
+		{
+			name:    "undefined template key in environment",
+			json:    `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"environment":{"X":"{{.config_pah}}"},"targets":{"build":["echo ok"]}}`,
+			wantErr: "config_pah",
+		},
+		{
+			name: "template with a declared key loads",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"params":{"config_path":{"default":"pyproject.toml"}},"environment":{"X":"{{.config_path}}"},"targets":{"build":["echo {{.config_path}}"]}}`,
+		},
+		{
+			name: "no templates at all loads",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["go build ./..."]}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "project-type.json")
+			if err := os.WriteFile(path, []byte(tt.json), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), "go/std/lib") {
+				t.Errorf("Load error = %v, want it to name the type", err)
+			}
+		})
+	}
+}
+
+func TestRenderTemplate(t *testing.T) {
+	rendered, err := RenderTemplate(`ruff check --config '{{.config_path}}' src`, map[string]string{"config_path": "my conf.toml"})
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	// The author's quoting is preserved: the value stays inside the quotes.
+	want := `ruff check --config 'my conf.toml' src`
+	if rendered != want {
+		t.Errorf("RenderTemplate = %q, want %q", rendered, want)
+	}
+
+	if _, err := RenderTemplate(`{{.missing}}`, map[string]string{}); err == nil ||
+		!strings.Contains(err.Error(), "missing") {
+		t.Errorf("RenderTemplate missing-key error = %v", err)
 	}
 }
