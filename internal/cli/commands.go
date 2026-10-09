@@ -7,20 +7,14 @@ import (
 )
 
 // The repo-level commands of the CLI, one stub per spec section. Each prints
-// a single line about what it will eventually do. (init, tree, sync and new
-// are implemented; init in init.go, tree in tree.go, sync in sync.go, new in
-// new.go.)
+// a single line about what it will eventually do. (init, tree, sync, new and
+// doctor are implemented; init in init.go, tree in tree.go, sync in sync.go,
+// new in new.go, doctor in doctor.go.)
 
 func newTypesCmd() *cobra.Command {
 	return stub("types [<name>[@<version>]]",
 		"Browse the installed project-type registry",
 		"not implemented yet: list installed project types, or show one type's versions / full definition (smith types [name[@version]])")
-}
-
-func newDoctorCmd() *cobra.Command {
-	return stub("doctor",
-		"BYOT toolchain check: report required tools found/missing on PATH",
-		"not implemented yet: check every required tool against PATH and report found/missing, exiting non-zero if anything is missing")
 }
 
 func newListCmd() *cobra.Command {

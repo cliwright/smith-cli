@@ -56,6 +56,7 @@ type typeSpec struct {
 	targets map[string][]string
 	deps    map[string][]string
 	wd      projecttype.WorkingDir
+	tools   []string
 }
 
 // writeDispatchRepo builds an initialized repo with the given manifests and
@@ -94,15 +95,20 @@ func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]man
 		ts := typeSpec{
 			targets: map[string][]string{"build": {"echo build"}},
 			wd:      projecttype.WorkingDirProject,
+			tools:   []string{"sh"},
 		}
 		if override != nil {
 			ts = *override
+		}
+		tools := ts.tools
+		if tools == nil {
+			tools = []string{"sh"}
 		}
 		pt := &projecttype.ProjectType{
 			Name:        ref.Name,
 			Version:     ref.Version,
 			Description: "test type",
-			Tools:       []string{"sh"},
+			Tools:       tools,
 			WorkingDir:  ts.wd,
 			Targets:     ts.targets,
 			DependsOn:   ts.deps,
