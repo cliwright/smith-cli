@@ -203,6 +203,15 @@ func TestLoadDryRendersTemplates(t *testing.T) {
 			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"params":{"config_path":{"default":"pyproject.toml"}},"environment":{"X":"{{.config_path}}"},"targets":{"build":["echo {{.config_path}}"]}}`,
 		},
 		{
+			name: "reserved computed var passes via sentinel",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"environment":{"ROOT":"{{.SMITH_REPO_ROOT}}/x"},"targets":{"build":["cd {{.SMITH_PROJECT_DIR}} && cp {{.SMITH_REPO_ROOT}}/x ."]}}`,
+		},
+		{
+			name:    "typo'd reserved var still fails",
+			json:    `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo {{.SMITH_REPO_RT}}"]}}`,
+			wantErr: "SMITH_REPO_RT",
+		},
+		{
 			name: "no templates at all loads",
 			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["go build ./..."]}}`,
 		},

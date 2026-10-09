@@ -114,14 +114,27 @@ func (pt *ProjectType) Defaults() map[string]string {
 	return defaults
 }
 
+// Reserved template vars, injected into the dry-render context so type
+// steps and environment values referencing them pass load-time validation.
+// The values are obviously-not-real-paths sentinels; real values are bound
+// per project at execution time.
+var dryRenderComputedVars = map[string]string{
+	"SMITH_REPO_ROOT":   "<smith-repo-root>",
+	"SMITH_PROJECT":     "<smith-project>",
+	"SMITH_PROJECT_DIR": "<smith-project-dir>",
+}
+
 // validateTemplates dry-renders every step and environment value against the
-// declared defaults, so a broken template fails at load (sync) time instead
-// of mid-run.
+// declared defaults plus the reserved computed vars, so a broken template
+// fails at load (sync) time instead of mid-run.
 func (pt *ProjectType) validateTemplates() error {
-	defaults := pt.Defaults()
+	context := pt.Defaults()
+	for key, value := range dryRenderComputedVars {
+		context[key] = value
+	}
 	for name, steps := range pt.Targets {
 		for i, step := range steps {
-			if _, err := RenderTemplate(step, defaults); err != nil {
+			if _, err := RenderTemplate(step, context); err != nil {
 				return fmt.Errorf("type %s@%d: target %q step %d: %w", pt.Name, pt.Version, name, i+1, err)
 			}
 		}
@@ -132,7 +145,7 @@ func (pt *ProjectType) validateTemplates() error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		if _, err := RenderTemplate(pt.Environment[key], defaults); err != nil {
+		if _, err := RenderTemplate(pt.Environment[key], context); err != nil {
 			return fmt.Errorf("type %s@%d: environment %q: %w", pt.Name, pt.Version, key, err)
 		}
 	}

@@ -261,7 +261,7 @@ func (rc *repoContext) runSingle(cmd *cobra.Command, p discovery.Project, target
 			p.Manifest.Name, t.Name, t.Version, target, strings.Join(sortedKeys(t.Targets), ", "))
 	}
 	warnParallel(cmd)
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}})
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot)
 	if err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []d
 		return fmt.Errorf("no project in %s has a %q target%s", scope, target, hint)
 	}
 
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
 	if err != nil {
 		return err
 	}

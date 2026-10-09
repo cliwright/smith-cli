@@ -31,11 +31,21 @@ depends_on:
 # Optional. Values for params the project type declares (see its
 # project-type.json). Keys must be declared by the type — an undeclared key
 # is a hard error when a target runs. Overrides the type's default.
+#
+# Rendering is two-phase: param values render against the reserved computed
+# vars ONLY — SMITH_REPO_ROOT (absolute repo root), SMITH_PROJECT (this
+# project's name), SMITH_PROJECT_DIR (absolute path to this project). They
+# may NOT reference other params. Param keys are lowercase-only, which is
+# what reserves the uppercase SMITH_* names.
+#
+#   params:
+#     config_path: '{{.SMITH_REPO_ROOT}}/pyproject.toml'
 params:
   config_path: ci/pyproject.toml
 
 # Optional. Extra environment variables for this project's target steps.
-# Values are Go templates over the merged params ({{.config_path}}) and
-# override type-level variables of the same name.
+# Values are Go templates over the merged params AND the computed vars
+# ({{.config_path}}, {{.SMITH_REPO_ROOT}}) and override type-level variables
+# of the same name.
 environment:
   PYTHONWARNDEFAULTENCODING: "1"

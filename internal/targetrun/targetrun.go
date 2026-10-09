@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -57,11 +58,54 @@ type Plan struct {
 // Order exposes the plan's nodes in execution order (prerequisites first).
 func (p *Plan) Order() []Node { return p.order }
 
+// ReservedTemplateVars are the smith-computed template variables available
+// in the rendering pipeline: uppercase keys, collision-free with params by
+// construction (the param key pattern is lowercase-only). SMITH_TARGET is
+// deliberately NOT here — it is subprocess-env-only, since manifests and
+// params are not target-scoped.
+var ReservedTemplateVars = []string{"SMITH_REPO_ROOT", "SMITH_PROJECT", "SMITH_PROJECT_DIR"}
+
+// computedVars builds the reserved template context for one project. dir is
+// the project directory relative to the (absolute) repo root.
+func computedVars(absRoot, dir, project string) map[string]string {
+	return map[string]string{
+		"SMITH_REPO_ROOT":   absRoot,
+		"SMITH_PROJECT":     project,
+		"SMITH_PROJECT_DIR": filepath.Join(absRoot, filepath.FromSlash(dir)),
+	}
+}
+
+var missingKeyPattern = regexp.MustCompile(`map has no entry for key "([^"]+)"`)
+
+// phaseAError classifies a failed phase-A render (manifest param value
+// against computed vars only): referencing another param gets the dedicated
+// message, an unknown var a naming one, anything else the raw error with
+// project/key/type context.
+func phaseAError(p discovery.Project, t *projecttype.ProjectType, key string, err error) error {
+	where := fmt.Sprintf("project %q (type %s@%d) param %q", p.Manifest.Name, t.Name, t.Version, key)
+	if m := missingKeyPattern.FindStringSubmatch(err.Error()); m != nil {
+		missing := m[1]
+		if _, declared := t.Params[missing]; declared {
+			return fmt.Errorf("%s: param values may reference computed vars (SMITH_*) only, not other params (references %q)", where, missing)
+		}
+		return fmt.Errorf("%s: unknown var %q; param values may reference computed vars (%s) only",
+			where, missing, strings.Join(ReservedTemplateVars, ", "))
+	}
+	return fmt.Errorf("%s: %w", where, err)
+}
+
 // Build computes the transitive prerequisite closure of roots and returns it
 // in topological order. Every referenced (project, target) node must exist in
 // its project's type — a dangling target, including one named by a manifest
 // depends_on entry, is a hard error naming project, target, and type.
-func Build(projects []discovery.Project, typeFor TypeFor, roots []Node) (*Plan, error) {
+// repoRoot scopes the reserved template vars (SMITH_REPO_ROOT, SMITH_PROJECT,
+// SMITH_PROJECT_DIR).
+func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot string) (*Plan, error) {
+	absRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolving repo root: %w", err)
+	}
+
 	byName := make(map[string]discovery.Project, len(projects))
 	for _, p := range projects {
 		byName[p.Manifest.Name] = p
@@ -70,9 +114,11 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node) (*Plan, 
 	types := map[string]*projecttype.ProjectType{}
 	params := map[string]map[string]string{}
 
-	// resolveParams merges type defaults with manifest overrides. A manifest
-	// param the type does not declare is a hard error naming project, key,
-	// and type.
+	// resolveParams merges type defaults with rendered manifest overrides.
+	// Phase A (strict): manifest param values render against the computed
+	// vars ONLY — a value referencing another param is a hard error naming
+	// project, key, and type. A manifest param the type does not declare is
+	// likewise a hard error.
 	resolveParams := func(p discovery.Project, t *projecttype.ProjectType) (map[string]string, error) {
 		merged := t.Defaults()
 		keys := make([]string, 0, len(p.Manifest.Params))
@@ -84,7 +130,11 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node) (*Plan, 
 			if _, declared := t.Params[key]; !declared {
 				return nil, fmt.Errorf("project %q (type %s@%d) sets param %q, which the type does not declare", p.Manifest.Name, t.Name, t.Version, key)
 			}
-			merged[key] = p.Manifest.Params[key]
+			rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], computedVars(absRoot, p.Dir, p.Manifest.Name))
+			if err != nil {
+				return nil, phaseAError(p, t, key, err)
+			}
+			merged[key] = rendered
 		}
 		return merged, nil
 	}
@@ -234,17 +284,27 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 			dir = filepath.Join(absRoot, filepath.FromSlash(p.dirs[n.Project]))
 		}
 		params := p.params[n.Project]
+		// Phase B: steps and environment values render against the merged
+		// params PLUS the reserved computed vars (computed wins on the
+		// (impossible) collision, by construction).
+		context := make(map[string]string, len(params)+3)
+		for key, value := range params {
+			context[key] = value
+		}
+		for key, value := range computedVars(absRoot, p.dirs[n.Project], n.Project) {
+			context[key] = value
+		}
 
 		var steps []string
 		for _, step := range t.Targets[n.Target] {
-			rendered, err := projecttype.RenderTemplate(step, params)
+			rendered, err := projecttype.RenderTemplate(step, context)
 			if err != nil {
 				return fmt.Errorf("%s: rendering step: %w", n, err)
 			}
 			steps = append(steps, rendered)
 		}
 
-		env, err := p.stepEnv(n, t, params, absRoot)
+		env, err := p.stepEnv(n, t, context, absRoot)
 		if err != nil {
 			return fmt.Errorf("%s: building environment: %w", n, err)
 		}
@@ -265,7 +325,8 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 // stepEnv builds the environment for one node: os.Environ() first, then the
 // rendered type environment, then the rendered manifest environment, then
 // the computed SMITH_* variables (appended last so they win).
-func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, params map[string]string, absRoot string) ([]string, error) {
+// SMITH_PROJECT_DIR is template-only and deliberately NOT exported here.
+func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, context map[string]string, absRoot string) ([]string, error) {
 	env := os.Environ()
 	appendLayer := func(vars map[string]string) error {
 		keys := make([]string, 0, len(vars))
@@ -274,7 +335,7 @@ func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, params map[string]str
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			rendered, err := projecttype.RenderTemplate(vars[key], params)
+			rendered, err := projecttype.RenderTemplate(vars[key], context)
 			if err != nil {
 				return fmt.Errorf("rendering %q: %w", key, err)
 			}
