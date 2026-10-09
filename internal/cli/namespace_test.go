@@ -175,15 +175,6 @@ func renderRepoTargets(rts map[string]config.RepoTarget) string {
 	return b.String()
 }
 
-func sortedStringKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // typeSpecPtr returns a pointer to the override for ref, or nil when the
 // fixture uses the default type shape.
 func typeSpecPtr(overrides map[string]typeSpec, ref string) *typeSpec {

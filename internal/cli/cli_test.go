@@ -30,22 +30,9 @@ func TestRootHelpListsCommandTree(t *testing.T) {
 	}
 }
 
-func TestSubcommandStubs(t *testing.T) {
-	// types is the only stub left (see commands.go); the rest are
-	// implemented in their own files and run against a repo, so they are not
-	// in this list.
-	for _, cmd := range []string{"types"} {
-		t.Run(cmd, func(t *testing.T) {
-			out, err := run(t, cmd)
-			if err != nil {
-				t.Fatalf("%s: %v", cmd, err)
-			}
-			if !strings.Contains(out, "not implemented yet") {
-				t.Errorf("%s output = %q, want a stub message", cmd, out)
-			}
-		})
-	}
-}
+// TestSubcommandStubs was removed when `smith types` — the last stub — was
+// implemented; only `smith list` remains stubbed (see commands.go), and its
+// milestone has not landed.
 
 // Namespace dispatch is fully covered in namespace_test.go; these two
 // stub-era tests (namespace dispatch stub messages) were removed when the
