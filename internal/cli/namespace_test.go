@@ -47,9 +47,10 @@ func useFakeExec(t *testing.T, f *fakeExec) {
 }
 
 type manifestSpec struct {
-	name string
-	typ  string
-	deps []manifest.Dependency
+	name   string
+	typ    string
+	deps   []manifest.Dependency
+	dotenv bool // opt the project into dotenv loading (smith.yml dotenv: true)
 }
 
 type typeSpec struct {
@@ -57,6 +58,7 @@ type typeSpec struct {
 	deps    map[string][]string
 	wd      projecttype.WorkingDir
 	tools   []string
+	env     map[string]string // type-level environment entries
 }
 
 // writeDispatchRepo builds an initialized repo with the given manifests and
@@ -112,6 +114,7 @@ func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]man
 			WorkingDir:  ts.wd,
 			Targets:     ts.targets,
 			DependsOn:   ts.deps,
+			Environment: ts.env,
 		}
 		data, err := projecttype.Marshal(pt)
 		if err != nil {
@@ -187,6 +190,9 @@ func typeSpecPtr(overrides map[string]typeSpec, ref string) *typeSpec {
 func renderManifest(spec manifestSpec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "version: 1\nname: %s\ntype: %s\n", spec.name, spec.typ)
+	if spec.dotenv {
+		b.WriteString("dotenv: true\n")
+	}
 	if len(spec.deps) > 0 {
 		b.WriteString("depends_on:\n")
 		for _, d := range spec.deps {

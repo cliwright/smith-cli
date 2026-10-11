@@ -30,6 +30,14 @@ type RepoConfig struct {
 	// to repo/<flavor>/<kind>@<version> types, run via `smith repo <name>
 	// <target>`. The alias is the grammar keyword.
 	RepoTargets map[string]RepoTarget `json:"repo_targets,omitempty" yaml:"repo_targets,omitempty"`
+	// Dotenv enables loading environment files from the repo's dotenv/
+	// directory — dotenv/.env always, plus dotenv/.<env>.env when an
+	// environment is selected — into every target step's environment, below
+	// declared type and manifest environment values.
+	Dotenv bool `json:"dotenv,omitempty" yaml:"dotenv,omitempty"`
+	// SmithEnv configures the environment selector: the default used when
+	// neither --env nor the SMITH_ENV variable selects one.
+	SmithEnv SmithEnv `json:"smith_env,omitempty" yaml:"smith_env,omitempty"`
 
 	node *yaml.Node
 }
@@ -40,6 +48,13 @@ type RepoTarget struct {
 	Type        string            `json:"type" yaml:"type"`
 	Params      map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
 	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
+}
+
+// SmithEnv is the smith_env block of .smith/repo.yml.
+type SmithEnv struct {
+	// Default is the environment selected when neither --env nor $SMITH_ENV
+	// is set; the schema validates it against the environment-name pattern.
+	Default string `json:"default" yaml:"default"`
 }
 
 // Registry is one registry source pair, in priority order: the first

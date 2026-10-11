@@ -29,6 +29,23 @@
       "items": { "type": "string", "minLength": 1 },
       "uniqueItems": true
     },
+    "dotenv": {
+      "description": "Load environment files from the repo's dotenv/ directory into target steps: dotenv/.env always (when enabled), then dotenv/.<env>.env when an environment is selected (--env, $SMITH_ENV, or smith_env.default). Loaded values sit below type and manifest environment entries; project-level dotenv files (smith.yml) override repo-level ones.",
+      "type": "boolean"
+    },
+    "smith_env": {
+      "description": "Environment selector configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default"],
+      "properties": {
+        "default": {
+          "description": "Environment used when neither --env nor the SMITH_ENV variable is set; selects dotenv/.<default>.env.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        }
+      }
+    },
     "workspace": {
       "type": "object",
       "additionalProperties": false,

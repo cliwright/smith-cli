@@ -261,7 +261,7 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	if err != nil {
 		return err
 	}
-	return plan.Execute(context.Background(), nsExecRunner, rc.repoRoot, stdout(cmd))
+	return rc.executePlan(cmd, plan)
 }
 
 // dispatchNamespace handles "smith <ns> ..." — the confirmed grammar:
@@ -360,7 +360,7 @@ func (rc *repoContext) runSingle(cmd *cobra.Command, p discovery.Project, target
 	if err != nil {
 		return err
 	}
-	return plan.Execute(context.Background(), nsExecRunner, rc.repoRoot, stdout(cmd))
+	return rc.executePlan(cmd, plan)
 }
 
 // runTarget runs target across a scope of projects. Projects whose type does
@@ -397,13 +397,36 @@ func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []d
 	if err != nil {
 		return err
 	}
-	if err := plan.Execute(context.Background(), nsExecRunner, rc.repoRoot, stdout(cmd)); err != nil {
+	if err := rc.executePlan(cmd, plan); err != nil {
 		return err
 	}
 	if skipped > 0 {
 		fmt.Fprintf(stdout(cmd), "ran %d, skipped %d (type has no '%s' target)\n", len(roots), skipped, target)
 	}
 	return nil
+}
+
+// resolveEnv determines the environment selector for this run; see
+// resolveEnvOrigin for the full precedence.
+func (rc *repoContext) resolveEnv(cmd *cobra.Command) (string, error) {
+	value, _, err := rc.resolveEnvOrigin(cmd)
+	return value, err
+}
+
+// executePlan runs a built plan: it resolves the environment selector,
+// attaches the repo's dotenv opt-in, preflights dotenv loading (a hard error
+// before anything runs when a promised file is missing), and executes.
+func (rc *repoContext) executePlan(cmd *cobra.Command, plan *targetrun.Plan) error {
+	env, err := rc.resolveEnv(cmd)
+	if err != nil {
+		return err
+	}
+	plan.RepoDotenv = rc.cfg.Dotenv
+	plan.SmithEnv = env
+	if err := plan.PrepareDotenv(rc.repoRoot); err != nil {
+		return err
+	}
+	return plan.Execute(context.Background(), nsExecRunner, rc.repoRoot, stdout(cmd))
 }
 
 // warnParallel notes that --parallel is accepted but execution is serial.

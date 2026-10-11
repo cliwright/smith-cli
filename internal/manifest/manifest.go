@@ -30,6 +30,12 @@ type Manifest struct {
 	// Environment extras for this project's target steps; values are Go
 	// templates over the merged params.
 	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
+	// Dotenv enables loading environment files from this project's dotenv/
+	// directory — dotenv/.env always, plus dotenv/.<env>.env when an
+	// environment is selected — into its target steps' environment, below
+	// declared type and manifest environment values and above repo-level
+	// dotenv values.
+	Dotenv bool `json:"dotenv,omitempty" yaml:"dotenv,omitempty"`
 
 	node *yaml.Node
 }

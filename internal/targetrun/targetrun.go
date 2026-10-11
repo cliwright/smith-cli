@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/dotenv"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/runner"
 )
@@ -53,6 +54,16 @@ type Plan struct {
 	dirs     map[string]string                   // project name → absolute project dir
 	projects map[string]discovery.Project        // by project name
 	params   map[string]map[string]string        // project name → merged params
+
+	// Dotenv configuration, set by the caller before PrepareDotenv and
+	// Execute. RepoDotenv mirrors the dotenv: key of .smith/repo.yml;
+	// SmithEnv is the resolved environment selector ("" = none selected).
+	// Neither affects graph shape — only the step environment.
+	RepoDotenv bool
+	SmithEnv   string
+
+	dotenvRepo     []string            // cached repo-level KEY=VALUE entries
+	dotenvProjects map[string][]string // project name → cached project-level entries
 }
 
 // Order exposes the plan's nodes in execution order (prerequisites first).
@@ -60,14 +71,14 @@ func (p *Plan) Order() []Node { return p.order }
 
 // ReservedTemplateVars are the smith-computed template variables available
 // in the rendering pipeline: uppercase keys, collision-free with params by
-// construction (the param key pattern is lowercase-only). SMITH_TARGET is
-// deliberately NOT here — it is subprocess-env-only, since manifests and
-// params are not target-scoped.
+// construction (the param key pattern is lowercase-only). SMITH_TARGET and
+// SMITH_ENV are deliberately NOT here — they are subprocess-env-only runtime
+// selectors, since manifests and params are neither target- nor run-scoped.
 var ReservedTemplateVars = []string{"SMITH_REPO_ROOT", "SMITH_PROJECT", "SMITH_PROJECT_DIR"}
 
-// computedVars builds the reserved template context for one project. dir is
+// ComputedVars builds the reserved template context for one project. dir is
 // the project directory relative to the (absolute) repo root.
-func computedVars(absRoot, dir, project string) map[string]string {
+func ComputedVars(absRoot, dir, project string) map[string]string {
 	return map[string]string{
 		"SMITH_REPO_ROOT":   absRoot,
 		"SMITH_PROJECT":     project,
@@ -94,6 +105,32 @@ func phaseAError(p discovery.Project, t *projecttype.ProjectType, key string, er
 	return fmt.Errorf("%s: %w", where, err)
 }
 
+// ResolveParams merges type defaults with rendered manifest overrides for one
+// project. Phase A (strict): manifest param values render against the
+// computed vars ONLY — a value referencing another param is a hard error
+// naming project, key, and type. A manifest param the type does not declare
+// is likewise a hard error. Exported for the --context view, which resolves
+// a single project without building a graph.
+func ResolveParams(absRoot string, p discovery.Project, t *projecttype.ProjectType) (map[string]string, error) {
+	merged := t.Defaults()
+	keys := make([]string, 0, len(p.Manifest.Params))
+	for key := range p.Manifest.Params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, declared := t.Params[key]; !declared {
+			return nil, fmt.Errorf("project %q (type %s@%d) sets param %q, which the type does not declare", p.Manifest.Name, t.Name, t.Version, key)
+		}
+		rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], ComputedVars(absRoot, p.Dir, p.Manifest.Name))
+		if err != nil {
+			return nil, phaseAError(p, t, key, err)
+		}
+		merged[key] = rendered
+	}
+	return merged, nil
+}
+
 // Build computes the transitive prerequisite closure of roots and returns it
 // in topological order. Every referenced (project, target) node must exist in
 // its project's type — a dangling target, including one named by a manifest
@@ -114,29 +151,10 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot
 	types := map[string]*projecttype.ProjectType{}
 	params := map[string]map[string]string{}
 
-	// resolveParams merges type defaults with rendered manifest overrides.
-	// Phase A (strict): manifest param values render against the computed
-	// vars ONLY — a value referencing another param is a hard error naming
-	// project, key, and type. A manifest param the type does not declare is
-	// likewise a hard error.
+	// resolveParams merges type defaults with rendered manifest overrides;
+	// the work lives in the exported ResolveParams, shared with --context.
 	resolveParams := func(p discovery.Project, t *projecttype.ProjectType) (map[string]string, error) {
-		merged := t.Defaults()
-		keys := make([]string, 0, len(p.Manifest.Params))
-		for key := range p.Manifest.Params {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if _, declared := t.Params[key]; !declared {
-				return nil, fmt.Errorf("project %q (type %s@%d) sets param %q, which the type does not declare", p.Manifest.Name, t.Name, t.Version, key)
-			}
-			rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], computedVars(absRoot, p.Dir, p.Manifest.Name))
-			if err != nil {
-				return nil, phaseAError(p, t, key, err)
-			}
-			merged[key] = rendered
-		}
-		return merged, nil
+		return ResolveParams(absRoot, p, t)
 	}
 
 	resolve := func(name string) (*projecttype.ProjectType, error) {
@@ -262,16 +280,92 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot
 	return plan, nil
 }
 
+// PrepareDotenv loads the dotenv layers for everything the plan will run and
+// caches them for stepEnv, failing loudly before any step runs. Per enabled
+// level — the repo (dotenv: in .smith/repo.yml) and then each involved
+// project (dotenv: in its smith.yml) — the base file dotenv/.env must exist
+// and merges with the selected environment's overlay dotenv/.<env>.env, which
+// wins per key within that level. A level that did not opt in contributes
+// nothing. When an environment is selected but no overlay exists at any
+// enabled level, that is a hard error — the selector promised a file.
+func (p *Plan) PrepareDotenv(repoRoot string) error {
+	absRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return fmt.Errorf("resolving repo root: %w", err)
+	}
+	p.dotenvRepo = nil
+	p.dotenvProjects = map[string][]string{}
+	overlays := 0
+	enabled := false
+
+	// loadLevel loads one opt-in level via dotenv.LoadStack and flattens its
+	// layers into sorted KEY=VALUE entries (base first, overlay winning).
+	loadLevel := func(dir, source string, optedIn bool) ([]string, error) {
+		if !optedIn {
+			return nil, nil
+		}
+		enabled = true
+		layers, err := dotenv.LoadStack(dir, p.SmithEnv, source)
+		if err != nil {
+			return nil, err
+		}
+		overlays += dotenv.Overlays(layers)
+		merged := map[string]string{}
+		for _, layer := range layers {
+			merged = dotenv.Merge(merged, layer.Vars)
+		}
+		return dotenv.Entries(merged), nil
+	}
+
+	entries, err := loadLevel(absRoot, ".smith/repo.yml", p.RepoDotenv)
+	if err != nil {
+		return err
+	}
+	p.dotenvRepo = entries
+
+	involved := map[string]bool{}
+	for _, n := range p.order {
+		involved[n.Project] = true
+	}
+	names := make([]string, 0, len(involved))
+	for name := range involved {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !p.projects[name].Manifest.Dotenv {
+			continue
+		}
+		dir := absRoot
+		if p.dirs[name] != "." {
+			dir = filepath.Join(absRoot, filepath.FromSlash(p.dirs[name]))
+		}
+		entries, err := loadLevel(dir, fmt.Sprintf("project %q (smith.yml)", name), true)
+		if err != nil {
+			return err
+		}
+		p.dotenvProjects[name] = entries
+	}
+
+	if p.SmithEnv != "" && enabled && overlays == 0 {
+		return dotenv.NoOverlayError(p.SmithEnv)
+	}
+	return nil
+}
+
 // Execute runs the plan serially, fail-fast: the first failing step aborts
 // the run with an error naming "project: target" and the exit status (via
 // the runner). Each step runs as `sh -c <step>` in the project's directory —
 // or the repo root when the type sets working_dir: repo. Steps and
 // environment values are Go templates over the merged params (type defaults
 // <- manifest overrides). The step environment is, lowest to highest
-// precedence: the process environment, the type's environment, the
-// manifest's environment, then the computed SMITH_REPO_ROOT / SMITH_PROJECT /
-// SMITH_TARGET (appended last, so nothing can shadow them). A header line
-// per node is written to out before its steps.
+// precedence: the process environment; the dotenv layers cached by
+// PrepareDotenv (repo dotenv/.env, repo dotenv/.<env>.env, project
+// dotenv/.env, project dotenv/.<env>.env); the type's environment; the
+// manifest's environment; then the computed SMITH_REPO_ROOT / SMITH_PROJECT /
+// SMITH_TARGET, plus SMITH_ENV when an environment is selected (appended
+// last, so nothing can shadow them). A header line per node is written to
+// out before its steps.
 func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Writer) error {
 	absRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
@@ -291,7 +385,7 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 		for key, value := range params {
 			context[key] = value
 		}
-		for key, value := range computedVars(absRoot, p.dirs[n.Project], n.Project) {
+		for key, value := range ComputedVars(absRoot, p.dirs[n.Project], n.Project) {
 			context[key] = value
 		}
 
@@ -323,11 +417,17 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 }
 
 // stepEnv builds the environment for one node: os.Environ() first, then the
-// rendered type environment, then the rendered manifest environment, then
-// the computed SMITH_* variables (appended last so they win).
-// SMITH_PROJECT_DIR is template-only and deliberately NOT exported here.
+// cached dotenv layers (repo, then project — see PrepareDotenv), then the
+// rendered type environment, then the rendered manifest environment, then the
+// computed SMITH_* variables (appended last so they win), plus SMITH_ENV when
+// an environment is selected. SMITH_PROJECT_DIR is template-only and
+// deliberately NOT exported here.
 func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, context map[string]string, absRoot string) ([]string, error) {
 	env := os.Environ()
+	env = append(env, p.dotenvRepo...)
+	if projectEntries, ok := p.dotenvProjects[n.Project]; ok {
+		env = append(env, projectEntries...)
+	}
 	appendLayer := func(vars map[string]string) error {
 		keys := make([]string, 0, len(vars))
 		for key := range vars {
@@ -354,6 +454,9 @@ func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, context map[string]st
 		"SMITH_PROJECT="+n.Project,
 		"SMITH_TARGET="+n.Target,
 	)
+	if p.SmithEnv != "" {
+		env = append(env, "SMITH_ENV="+p.SmithEnv)
+	}
 	return env, nil
 }
 

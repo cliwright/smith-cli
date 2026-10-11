@@ -69,6 +69,10 @@
       "description": "Extra environment variables for this project's target steps. Values are Go templates over the merged params; overrides the type's environment.",
       "type": "object",
       "additionalProperties": { "type": "string" }
+    },
+    "dotenv": {
+      "description": "Load environment files from this project's dotenv/ directory into its target steps: dotenv/.env always (when enabled), then dotenv/.<env>.env when an environment is selected (--env, $SMITH_ENV, or repo.yml smith_env.default). Loaded values override repo-level dotenv files but sit below type and manifest environment entries.",
+      "type": "boolean"
     }
   }
 }

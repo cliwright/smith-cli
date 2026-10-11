@@ -38,6 +38,10 @@ namespace's projects. See "smith help" for the full grammar.`,
 	}
 	root.PersistentFlags().IntP("parallel", "p", 1,
 		"run N targets concurrently (default 1 = serial, deterministic output)")
+	root.PersistentFlags().String("env", "",
+		"select the environment: load dotenv/.<env>.env overlays and export SMITH_ENV to target steps (overrides $SMITH_ENV and repo.yml smith_env.default)")
+	root.PersistentFlags().Bool("context", false,
+		"print the resolved environment (annotated KEY=VALUE) for the addressed scope instead of running; bare 'smith --context' shows the repo-level dotenv view")
 
 	root.AddCommand(
 		newInitCmd(),
@@ -64,12 +68,16 @@ func stdout(cmd *cobra.Command) io.Writer {
 // this runs, so a namespace named "sync" is shadowed (documented, not coded
 // around).
 func dispatch(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
+	contextFlag, _ := cmd.Flags().GetBool("context")
+	if len(args) == 0 && !contextFlag {
 		return cmd.Help()
 	}
 	rc, err := loadRepoContext()
 	if err != nil {
 		return err
+	}
+	if contextFlag {
+		return rc.dispatchContext(cmd, args)
 	}
 	// "repo" is a RESERVED namespace: the synthetic attachments namespace
 	// shadows any project_root directory literally named "repo".
