@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smith.cliwright.dev/schemas/service.v1.json",
+  "title": "Smith Service",
+  "description": "A named composition of repository projects. A service has no behavior of its own: it names a set of components and maps a closed vocabulary of service targets onto component targets. Execution order comes from project-level depends_on (service files never declare dependencies). Lives as an arbitrary-named *.yml directly inside the repo's reserved services/ project root.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "components"],
+  "properties": {
+    "version": {
+      "description": "File-format version. Always 1 for this schema.",
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "description": "Service name. Must be unique across the repository's services (enforced by smith at load, not expressible here).",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "minLength": 1
+    },
+    "components": {
+      "description": "The projects that make up this service. A component may map its own target names onto service targets (targets: {<component target>: <service target>}); without a mapping, a component implements a service target by name match. Components are validated against discovered projects by smith at load.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project"],
+        "properties": {
+          "project": {
+            "description": "Project name, as declared in that project's smith.yml.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "minLength": 1
+          },
+          "targets": {
+            "description": "Service-target mapping, direction component target -> service target: the component target named by the key implements the service target named by the value. Values are drawn from the closed service-target vocabulary.",
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {
+              "^[a-z][a-z0-9-]*$": {
+                "type": "string",
+                "enum": ["build", "test", "lint", "push", "plan", "deploy", "destroy"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -24,6 +24,7 @@ const (
 	ProjectManifest = "project-manifest"
 	ProjectType     = "project-type"
 	Lock            = "lock"
+	Service         = "service"
 )
 
 var schemaFiles = map[string]string{
@@ -31,6 +32,7 @@ var schemaFiles = map[string]string{
 	ProjectManifest: "project-manifest.schema.json",
 	ProjectType:     "project-type.schema.json",
 	Lock:            "lock.schema.json",
+	Service:         "service.schema.json",
 }
 
 var (
@@ -79,7 +81,7 @@ func Validate(documentName string, doc any) error {
 	}
 	sch, ok := compiled[documentName]
 	if !ok {
-		return fmt.Errorf("unknown document schema %q (want one of: repo-config, project-manifest, project-type, lock)", documentName)
+		return fmt.Errorf("unknown document schema %q (want one of: repo-config, project-manifest, project-type, lock, service)", documentName)
 	}
 	if err := sch.Validate(doc); err != nil {
 		return fmt.Errorf("%s: schema validation failed: %w", documentName, err)

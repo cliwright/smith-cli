@@ -17,6 +17,7 @@ import (
 	"github.com/cliwright/smith/internal/manifest"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/runner"
+	"github.com/cliwright/smith/internal/service"
 	"github.com/cliwright/smith/internal/targetrun"
 	"github.com/cliwright/smith/internal/typeref"
 )
@@ -26,12 +27,13 @@ import (
 var nsExecRunner targetrun.Runner = runner.Default
 
 // repoContext is everything the namespace dispatcher needs from the
-// repository: config, discovered projects, and lazily resolved, lock-verified
-// project types.
+// repository: config, discovered projects, services, and lazily resolved,
+// lock-verified project types.
 type repoContext struct {
 	repoRoot string
 	cfg      *config.RepoConfig
 	projects []discovery.Project // sorted by Dir
+	services []*service.Service  // sorted by name
 	lockFile *lock.Lock
 	types    map[string]*projecttype.ProjectType // by project name, resolved lazily
 }
@@ -53,12 +55,42 @@ func loadRepoContext() (*repoContext, error) {
 	if err != nil {
 		return nil, err
 	}
+	services, err := loadServices(repoRoot, cfg, projects)
+	if err != nil {
+		return nil, err
+	}
 	return &repoContext{
 		repoRoot: repoRoot,
 		cfg:      cfg,
 		projects: projects,
+		services: services,
 		types:    map[string]*projecttype.ProjectType{},
 	}, nil
+}
+
+// loadServices loads the service files from the repo's reserved services/
+// project root, when such a root is declared. The root not existing on disk
+// (or not being declared) means no services. Component references are
+// validated against the discovered projects; a broken service file is a
+// load-time error for every repo-scoped command, matching manifest behavior.
+func loadServices(repoRoot string, cfg *config.RepoConfig, projects []discovery.Project) ([]*service.Service, error) {
+	var services []*service.Service
+	projectNames := make(map[string]bool, len(projects))
+	for _, p := range projects {
+		projectNames[p.Manifest.Name] = true
+	}
+	for _, root := range cfg.Workspace.ProjectRoots {
+		if filepath.ToSlash(root) != servicesRootName {
+			continue
+		}
+		dir := filepath.Join(repoRoot, filepath.FromSlash(root))
+		loaded, err := service.LoadDir(dir, projectNames)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, loaded...)
+	}
+	return services, nil
 }
 
 // lock loads and caches .smith/lock.json. A missing lock is a hard error:

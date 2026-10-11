@@ -84,6 +84,12 @@ func dispatch(cmd *cobra.Command, args []string) error {
 	if args[0] == "repo" {
 		return rc.dispatchRepo(cmd, args[1:])
 	}
+	// "services" is a RESERVED namespace too: the service-composition grammar
+	// shadows the directory namespace of the same name (projects under
+	// services/ stay reachable through repo-wide target runs).
+	if args[0] == servicesRootName {
+		return rc.dispatchServices(cmd, args[1:])
+	}
 	if slices.Contains(rc.namespaces(), args[0]) {
 		return rc.dispatchNamespace(cmd, args[0], args[1:])
 	}

@@ -6,7 +6,7 @@ package schemas
 
 import "embed"
 
-// FS holds the four Smith document schemas.
+// FS holds the five Smith document schemas.
 //
 //go:embed *.schema.json
 var FS embed.FS
