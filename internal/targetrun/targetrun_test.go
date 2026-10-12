@@ -261,6 +261,37 @@ func TestExecuteWorkingDir(t *testing.T) {
 	}
 }
 
+func TestExecuteWorkingDirManifestOverridesType(t *testing.T) {
+	up, down := mkProject("libs/up", "up", "mock/lib@1"), mkProject("libs/down", "down", "mock/lib@1")
+	up.Manifest.WorkingDir = "repo"      // type says project, manifest says repo
+	down.Manifest.WorkingDir = "project" // type says repo, manifest says project
+	projects := []discovery.Project{up, down}
+	types := map[string]*projecttype.ProjectType{
+		"up":   mkType(map[string][]string{"build": {"echo up"}}, nil, projecttype.WorkingDirProject),
+		"down": mkType(map[string][]string{"build": {"echo down"}}, nil, projecttype.WorkingDirRepo),
+	}
+	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+
+	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := &fakeRunner{}
+	if err := plan.Execute(context.Background(), f, "/repo", &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	byStep := map[string]string{}
+	for _, r := range f.runs {
+		byStep[r.step] = r.dir
+	}
+	if got := byStep["echo up"]; got != "/repo" {
+		t.Errorf("manifest working_dir repo over type project: ran in %q, want /repo", got)
+	}
+	if got, want := byStep["echo down"], filepath.Join("/repo", "libs", "down"); got != want {
+		t.Errorf("manifest working_dir project over type repo: ran in %q, want %q", got, want)
+	}
+}
+
 func TestBuildRejectsUndeclaredManifestParam(t *testing.T) {
 	projects := []discovery.Project{
 		mkProjectFull("libs/alpha", "alpha", "mock/lib@1", map[string]string{"speed": "fast"}, nil),

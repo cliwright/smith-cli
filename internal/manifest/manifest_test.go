@@ -103,6 +103,11 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			yaml: valid + "environment:\n  DEBUG: 3\n",
 			want: "environment",
 		},
+		{
+			name: "working_dir outside the two legal values",
+			yaml: valid + "working_dir: wherever\n",
+			want: "working_dir",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,6 +123,34 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 				t.Errorf("Load(%q) error = %q, want substring %q", path, err, tt.want)
 			}
 		})
+	}
+}
+
+// TestWorkingDirRoundTrip covers the manifest-level working_dir override:
+// it loads, and Save preserves it.
+func TestWorkingDirRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "smith.yml")
+	doc := "version: 1\nname: demo\ntype: python/astral/lib@1\nworking_dir: repo\n"
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.WorkingDir != "repo" {
+		t.Errorf("WorkingDir = %q, want repo", m.WorkingDir)
+	}
+	saved := filepath.Join(t.TempDir(), "smith.yml")
+	if err := Save(saved, m); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	reloaded, err := Load(saved)
+	if err != nil {
+		t.Fatalf("reloading saved file: %v", err)
+	}
+	if reloaded.WorkingDir != "repo" {
+		t.Errorf("reloaded WorkingDir = %q, want repo", reloaded.WorkingDir)
 	}
 }
 

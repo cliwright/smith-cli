@@ -36,6 +36,11 @@ type Manifest struct {
 	// declared type and manifest environment values and above repo-level
 	// dotenv values.
 	Dotenv bool `json:"dotenv,omitempty" yaml:"dotenv,omitempty"`
+	// WorkingDir overrides where this project's target steps execute:
+	// "project" (its own directory) or "repo" (the repository root). Same
+	// two values as the type's working_dir; empty means inherit the type's
+	// setting (project when the type omits it).
+	WorkingDir string `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
 
 	node *yaml.Node
 }

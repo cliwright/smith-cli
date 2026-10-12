@@ -356,7 +356,8 @@ func (p *Plan) PrepareDotenv(repoRoot string) error {
 // Execute runs the plan serially, fail-fast: the first failing step aborts
 // the run with an error naming "project: target" and the exit status (via
 // the runner). Each step runs as `sh -c <step>` in the project's directory —
-// or the repo root when the type sets working_dir: repo. Steps and
+// or the repo root when the type sets working_dir: repo, unless the manifest
+// overrides it (manifest working_dir wins over the type's). Steps and
 // environment values are Go templates over the merged params (type defaults
 // <- manifest overrides). The step environment is, lowest to highest
 // precedence: the process environment; the dotenv layers cached by
@@ -374,7 +375,13 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 	for _, n := range p.order {
 		t := p.types[n.Project]
 		dir := absRoot
-		if t.WorkingDir != projecttype.WorkingDirRepo {
+		// The manifest's working_dir overrides the type's (same two values);
+		// empty means inherit, and a type omitting it defaults to project.
+		workingDir := t.WorkingDir
+		if m := p.projects[n.Project].Manifest.WorkingDir; m != "" {
+			workingDir = projecttype.WorkingDir(m)
+		}
+		if workingDir != projecttype.WorkingDirRepo {
 			dir = filepath.Join(absRoot, filepath.FromSlash(p.dirs[n.Project]))
 		}
 		params := p.params[n.Project]

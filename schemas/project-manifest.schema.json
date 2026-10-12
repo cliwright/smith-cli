@@ -73,6 +73,11 @@
     "dotenv": {
       "description": "Load environment files from this project's dotenv/ directory into its target steps: dotenv/.env always (when enabled), then dotenv/.<env>.env when an environment is selected (--env, $SMITH_ENV, or repo.yml smith_env.default). Loaded values override repo-level dotenv files but sit below type and manifest environment entries.",
       "type": "boolean"
+    },
+    "working_dir": {
+      "description": "Where this project's target steps execute: its project directory or the repository root. Overrides the type's working_dir — exactly these two values, no arbitrary paths. Omit to inherit the type's setting (project when the type omits it).",
+      "type": "string",
+      "enum": ["project", "repo"]
     }
   }
 }
