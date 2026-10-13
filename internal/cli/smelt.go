@@ -13,36 +13,19 @@ import (
 	"github.com/cliwright/smith/internal/projecttype"
 )
 
-// newTypeCmd is the `smith type` command: project-type authoring. Its sibling
-// `smith types` stays the installed-type browser; `type` is for the registry
-// side (authoring and packing).
-func newTypeCmd() *cobra.Command {
+// newSmeltCmd is `smith smelt` — pack a registry type directory into its
+// ingot (smelting raw source into the published artifact).
+func newSmeltCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "type",
-		Short: "Author and pack project types",
-		Long: `Author and pack project types.
-
-These commands operate on the registry side — the source directories that
-publish types — not on a repository's installed copies. See "smith types"
-for browsing what is installed in this repository.`,
-		Args:         cobra.NoArgs,
-		SilenceUsage: true,
-	}
-	cmd.AddCommand(newTypePackCmd())
-	return cmd
-}
-
-func newTypePackCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "pack",
+		Use:   "smelt",
 		Short: "Pack a type directory into its ingot and sidecar",
-		Long: `Pack a type directory into its published artifact.
+		Long: `Smelt a type directory into its published ingot.
 
 --path names a registry-layout type version directory — the path holding
 project-type.json, e.g. python/astral/lib/v1. The directory's position in
 the tree must agree with the file (the registry invariant: the last three
 path segments are the type name, and the version directory is v<N> matching
-the file's "version"). The pack fails loudly on a mismatch rather than
+the file's "version"). The smelt fails loudly on a mismatch rather than
 publishing an incoherent artifact.
 
 Writes <flat-name>.ingot (a reproducible tar archive of project-type.json
@@ -57,9 +40,9 @@ type; the sidecar is what "smith sync" verifies the download against.`,
 				return err
 			}
 			if path == "" {
-				return fmt.Errorf("smith type pack: --path is required (the type version directory, e.g. python/astral/lib/v1)")
+				return fmt.Errorf("smith smelt: --path is required (the type version directory, e.g. python/astral/lib/v1)")
 			}
-			return runTypePack(cmd, path)
+			return runSmelt(cmd, path)
 		},
 	}
 	cmd.Flags().String("path", "",
@@ -67,38 +50,38 @@ type; the sidecar is what "smith sync" verifies the download against.`,
 	return cmd
 }
 
-func runTypePack(cmd *cobra.Command, arg string) error {
+func runSmelt(cmd *cobra.Command, arg string) error {
 	dir, err := filepath.Abs(arg)
 	if err != nil {
-		return fmt.Errorf("smith type pack: %w", err)
+		return fmt.Errorf("smith smelt: %w", err)
 	}
 	ptPath := filepath.Join(dir, "project-type.json")
 	pt, err := projecttype.Load(ptPath)
 	if err != nil {
-		return fmt.Errorf("smith type pack: %w", err)
+		return fmt.Errorf("smith smelt: %w", err)
 	}
 	if err := checkRegistryPosition(dir, pt); err != nil {
-		return fmt.Errorf("smith type pack: %w", err)
+		return fmt.Errorf("smith smelt: %w", err)
 	}
 
 	ingotBytes, err := ingot.Pack(dir)
 	if err != nil {
-		return fmt.Errorf("smith type pack: %w", err)
+		return fmt.Errorf("smith smelt: %w", err)
 	}
 	names, err := ingot.List(ingotBytes)
 	if err != nil {
-		return fmt.Errorf("smith type pack: %w", err)
+		return fmt.Errorf("smith smelt: %w", err)
 	}
 
 	artifactName := ingot.FileName(pt.Name, pt.Version)
 	artifact := filepath.Join(dir, artifactName)
 	if err := os.WriteFile(artifact, ingotBytes, 0o644); err != nil {
-		return fmt.Errorf("smith type pack: writing %s: %w", artifact, err)
+		return fmt.Errorf("smith smelt: writing %s: %w", artifact, err)
 	}
 	sidecar := artifact + ".sha256"
 	sidecarBody := fmt.Sprintf("%s  %s\n", strings.TrimPrefix(ingot.Hash(ingotBytes), "sha256:"), artifactName)
 	if err := os.WriteFile(sidecar, []byte(sidecarBody), 0o644); err != nil {
-		return fmt.Errorf("smith type pack: writing %s: %w", sidecar, err)
+		return fmt.Errorf("smith smelt: writing %s: %w", sidecar, err)
 	}
 
 	out := stdout(cmd)

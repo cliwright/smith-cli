@@ -28,18 +28,18 @@ func writeRegistryTypeDir(t *testing.T, root, name string, version int, files ma
 	return dir
 }
 
-const packTypeContent = `{"name":"python/astral/lib","version":1,"description":"Python library on the Astral toolchain","tools":["python","uv"],"targets":{"build":["uv build"]}}`
+const smeltTypeContent = `{"name":"python/astral/lib","version":1,"description":"Python library on the Astral toolchain","tools":["python","uv"],"targets":{"build":["uv build"]}}`
 
-func TestTypePackWritesIngotAndSidecar(t *testing.T) {
+func TestSmeltWritesIngotAndSidecar(t *testing.T) {
 	root := t.TempDir()
 	dir := writeRegistryTypeDir(t, root, "python/astral/lib", 1, map[string]string{
-		"project-type.json": packTypeContent,
+		"project-type.json": smeltTypeContent,
 		"scripts/build.sh":  "#!/bin/sh\necho build\n",
 		"help/project.md":   "# project\n",
 	})
-	out, err := run(t, "type", "pack", "--path", dir)
+	out, err := run(t, "smelt", "--path", dir)
 	if err != nil {
-		t.Fatalf("type pack: %v\noutput:\n%s", err, out)
+		t.Fatalf("smelt: %v\noutput:\n%s", err, out)
 	}
 
 	artifact := filepath.Join(dir, "python-astral-lib@v1.ingot")
@@ -66,8 +66,8 @@ func TestTypePackWritesIngotAndSidecar(t *testing.T) {
 
 	// Packing again is byte-identical (reproducibility) — the first pack's
 	// own artifact is excluded from the second.
-	if _, err := run(t, "type", "pack", "--path", dir); err != nil {
-		t.Fatalf("second pack: %v", err)
+	if _, err := run(t, "smelt", "--path", dir); err != nil {
+		t.Fatalf("second smelt: %v", err)
 	}
 	again, err := os.ReadFile(artifact)
 	if err != nil {
@@ -78,37 +78,37 @@ func TestTypePackWritesIngotAndSidecar(t *testing.T) {
 	}
 }
 
-func TestTypePackEnforcesRegistryPosition(t *testing.T) {
+func TestSmeltEnforcesRegistryPosition(t *testing.T) {
 	root := t.TempDir()
 
 	// Version directory does not match the file's version.
 	badVersion := writeRegistryTypeDir(t, root, "python/astral/lib", 2, map[string]string{
-		"project-type.json": packTypeContent, // declares version 1
+		"project-type.json": smeltTypeContent, // declares version 1
 	})
-	_, err := run(t, "type", "pack", "--path", badVersion)
+	_, err := run(t, "smelt", "--path", badVersion)
 	if err == nil || !strings.Contains(err.Error(), `version directory is "v2"`) {
 		t.Fatalf("error = %v, want version-mismatch error", err)
 	}
 
 	// Path name does not match the file's name.
 	badName := writeRegistryTypeDir(t, root, "python/other/lib", 1, map[string]string{
-		"project-type.json": packTypeContent, // declares python/astral/lib
+		"project-type.json": smeltTypeContent, // declares python/astral/lib
 	})
-	_, err = run(t, "type", "pack", "--path", badName)
+	_, err = run(t, "smelt", "--path", badName)
 	if err == nil || !strings.Contains(err.Error(), `path implies type "python/other/lib"`) {
 		t.Fatalf("error = %v, want name-mismatch error", err)
 	}
 }
 
-func TestTypePackRefusesNonTypeDir(t *testing.T) {
-	_, err := run(t, "type", "pack", "--path", t.TempDir())
+func TestSmeltRefusesNonTypeDir(t *testing.T) {
+	_, err := run(t, "smelt", "--path", t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "project-type.json") {
 		t.Fatalf("error = %v, want missing-type error", err)
 	}
 }
 
-func TestTypePackRequiresPathFlag(t *testing.T) {
-	_, err := run(t, "type", "pack")
+func TestSmeltRequiresPathFlag(t *testing.T) {
+	_, err := run(t, "smelt")
 	if err == nil || !strings.Contains(err.Error(), "--path is required") {
 		t.Fatalf("error = %v, want the --path guard", err)
 	}
