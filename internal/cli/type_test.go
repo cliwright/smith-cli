@@ -37,7 +37,7 @@ func TestTypePackWritesIngotAndSidecar(t *testing.T) {
 		"scripts/build.sh":  "#!/bin/sh\necho build\n",
 		"help/project.md":   "# project\n",
 	})
-	out, err := run(t, "type", "pack", dir)
+	out, err := run(t, "type", "pack", "--path", dir)
 	if err != nil {
 		t.Fatalf("type pack: %v\noutput:\n%s", err, out)
 	}
@@ -66,7 +66,7 @@ func TestTypePackWritesIngotAndSidecar(t *testing.T) {
 
 	// Packing again is byte-identical (reproducibility) — the first pack's
 	// own artifact is excluded from the second.
-	if _, err := run(t, "type", "pack", dir); err != nil {
+	if _, err := run(t, "type", "pack", "--path", dir); err != nil {
 		t.Fatalf("second pack: %v", err)
 	}
 	again, err := os.ReadFile(artifact)
@@ -85,7 +85,7 @@ func TestTypePackEnforcesRegistryPosition(t *testing.T) {
 	badVersion := writeRegistryTypeDir(t, root, "python/astral/lib", 2, map[string]string{
 		"project-type.json": packTypeContent, // declares version 1
 	})
-	_, err := run(t, "type", "pack", badVersion)
+	_, err := run(t, "type", "pack", "--path", badVersion)
 	if err == nil || !strings.Contains(err.Error(), `version directory is "v2"`) {
 		t.Fatalf("error = %v, want version-mismatch error", err)
 	}
@@ -94,15 +94,22 @@ func TestTypePackEnforcesRegistryPosition(t *testing.T) {
 	badName := writeRegistryTypeDir(t, root, "python/other/lib", 1, map[string]string{
 		"project-type.json": packTypeContent, // declares python/astral/lib
 	})
-	_, err = run(t, "type", "pack", badName)
+	_, err = run(t, "type", "pack", "--path", badName)
 	if err == nil || !strings.Contains(err.Error(), `path implies type "python/other/lib"`) {
 		t.Fatalf("error = %v, want name-mismatch error", err)
 	}
 }
 
 func TestTypePackRefusesNonTypeDir(t *testing.T) {
-	_, err := run(t, "type", "pack", t.TempDir())
+	_, err := run(t, "type", "pack", "--path", t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "project-type.json") {
 		t.Fatalf("error = %v, want missing-type error", err)
+	}
+}
+
+func TestTypePackRequiresPathFlag(t *testing.T) {
+	_, err := run(t, "type", "pack")
+	if err == nil || !strings.Contains(err.Error(), "--path is required") {
+		t.Fatalf("error = %v, want the --path guard", err)
 	}
 }

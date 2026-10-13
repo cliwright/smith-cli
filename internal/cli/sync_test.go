@@ -13,6 +13,7 @@ import (
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
+	"github.com/cliwright/smith/internal/typeref"
 )
 
 const testTypeContent = `{"name":"python/astral/lib","version":1,"description":"Python library on the Astral toolchain","tools":["python","uv"],"targets":{"build":["uv build"]}}`
@@ -721,5 +722,80 @@ func TestSyncMigratesLegacyFlatInstall(t *testing.T) {
 	}
 	if _, err := os.Stat(installedDir(t, repo, "python/astral/lib@v1")); err != nil {
 		t.Errorf("ingot form missing after migration: %v", err)
+	}
+}
+
+// TestSyncForcePrunesUnreferencedTypes: --force is a clean slate — an
+// installed type the repo no longer references is removed from .smith/types
+// and dropped from the rebuilt lock.
+func TestSyncForcePrunesUnreferencedTypes(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, map[string][2]string{
+		"libs/demo": {"demo", "python/astral/lib@1"},
+	})
+	// An installed type (and pin) the repo no longer references.
+	staleRef := typeref.TypeRef{Name: "mock/stale/lib", Version: 1}
+	staleHash := installIngotForTest(t, repo, staleRef, map[string]string{
+		"project-type.json": `{"name":"mock/stale/lib","version":1,"description":"stale","tools":[],"targets":{"build":["true"]}}`,
+	})
+	lk := &lock.Lock{Version: 1, Types: map[string]lock.TypePin{
+		"mock/stale/lib@1": {Registry: "cliwright", Hash: staleHash},
+	}}
+	if err := lock.Save(lockPathIn(repo), lk); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync", "--force"); err != nil {
+		t.Fatalf("sync --force: %v", err)
+	}
+	if _, err := os.Stat(installedDir(t, repo, "mock/stale/lib@v1")); !os.IsNotExist(err) {
+		t.Errorf("unreferenced type survived --force (stat err = %v)", err)
+	}
+	rebuilt, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rebuilt.Types["mock/stale/lib@1"]; ok {
+		t.Errorf("stale pin survived --force: %v", rebuilt.Types)
+	}
+	if _, err := os.Stat(installedDir(t, repo, "python/astral/lib@v1")); err != nil {
+		t.Errorf("referenced type missing after --force: %v", err)
+	}
+	if pin := rebuilt.Types["python/astral/lib@1"]; pin.Hash != testTypeIngotHash(t) {
+		t.Errorf("pin.Hash = %q, want the freshly fetched ingot hash", pin.Hash)
+	}
+}
+
+// TestSyncForceWipesLegacyFlatInstalls: --force clears .smith/types entirely,
+// including pre-ingot flat files that a plain sync would only migrate per
+// referenced type.
+func TestSyncForceWipesLegacyFlatInstalls(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, map[string][2]string{
+		"libs/demo": {"demo", "python/astral/lib@1"},
+	})
+	stray := filepath.Join(repo, cacheDirName, "types", "mock", "stray", "lib@v9.json")
+	if err := os.MkdirAll(filepath.Dir(stray), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stray, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync", "--force"); err != nil {
+		t.Fatalf("sync --force: %v", err)
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Errorf("stray legacy install survived --force (stat err = %v)", err)
 	}
 }

@@ -33,12 +33,12 @@ for browsing what is installed in this repository.`,
 }
 
 func newTypePackCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "pack <type-dir>",
+	cmd := &cobra.Command{
+		Use:   "pack",
 		Short: "Pack a type directory into its ingot and sidecar",
 		Long: `Pack a type directory into its published artifact.
 
-The argument is a registry-layout type version directory — the path holding
+--path names a registry-layout type version directory — the path holding
 project-type.json, e.g. python/astral/lib/v1. The directory's position in
 the tree must agree with the file (the registry invariant: the last three
 path segments are the type name, and the version directory is v<N> matching
@@ -49,12 +49,22 @@ Writes <flat-name>.ingot (a reproducible tar archive of project-type.json
 plus the type's scripts/ and help/) and its .sha256 sidecar into the
 directory. CI (the registry repo's "task publish") invokes this for every
 type; the sidecar is what "smith sync" verifies the download against.`,
-		Args:         cobra.ExactArgs(1),
+		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTypePack(cmd, args[0])
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := cmd.Flags().GetString("path")
+			if err != nil {
+				return err
+			}
+			if path == "" {
+				return fmt.Errorf("smith type pack: --path is required (the type version directory, e.g. python/astral/lib/v1)")
+			}
+			return runTypePack(cmd, path)
 		},
 	}
+	cmd.Flags().String("path", "",
+		"type version directory to pack (registry layout: <language>/<flavor>/<kind>/v<N>)")
+	return cmd
 }
 
 func runTypePack(cmd *cobra.Command, arg string) error {

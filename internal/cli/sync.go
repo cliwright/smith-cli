@@ -49,9 +49,10 @@ checked in by default, so a clone builds without a network sync step. The
 directory holds the ingot itself plus its unpacked contents, so the lock
 pins the artifact and load verifies both the artifact and the tree.
 
---force re-downloads every type the repo uses (no up-to-date shortcut) and
-rewrites .smith/lock.json from scratch, dropping pins for types the repo
-no longer references. It takes no type arguments.`,
+--force is a clean slate: it first removes .smith/lock.json and everything
+under .smith/types/, then re-downloads every type the repo uses (no
+up-to-date shortcut) and rewrites .smith/lock.json from scratch. It takes
+no type arguments.`,
 		Args:         cobra.ArbitraryArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -59,7 +60,7 @@ no longer references. It takes no type arguments.`,
 		},
 	}
 	cmd.Flags().Bool("force", false,
-		"re-download every type the repo uses and rebuild .smith/lock.json from scratch (takes no type arguments)")
+		"clean slate: remove the lock and everything under .smith/types, then re-download and re-pin from scratch (takes no type arguments)")
 	return cmd
 }
 
@@ -87,6 +88,20 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if force {
+		// --force is a clean slate: drop the lock and everything installed,
+		// then re-fetch and re-pin from scratch.
+		lockPath := filepath.Join(repoRoot, cacheDirName, lockJSONName)
+		if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("sync --force: removing %s: %w", lockPath, err)
+		}
+		typesRoot := typesDir(repoRoot)
+		if err := os.RemoveAll(typesRoot); err != nil {
+			return fmt.Errorf("sync --force: clearing %s: %w", typesRoot, err)
+		}
+	}
+
 	if len(refs) == 0 {
 		fmt.Fprintln(stdout(cmd), "no project types to sync")
 		return nil
