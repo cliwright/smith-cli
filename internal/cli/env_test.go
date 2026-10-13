@@ -67,10 +67,9 @@ func TestResolveEnvRejectsInvalidNames(t *testing.T) {
 // shell step — to prove the selector and the dotenv layers reach the
 // subprocess.
 func TestRootEnvFlagEndToEnd(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
 	markers := filepath.Join(repo, "markers")
-	writeDispatchRepo(t, home, repo,
+	writeDispatchRepo(t, repo,
 		map[string]manifestSpec{
 			"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		},

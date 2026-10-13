@@ -11,11 +11,10 @@ import (
 // env dev), a project alpha (opted in, manifest-level entries), and a
 // project beta (not opted in). The shared type sets REGISTRY in its
 // environment so type-vs-dotenv precedence is visible.
-func contextFixture(t *testing.T) (home, repo string) {
+func contextFixture(t *testing.T) (repo string) {
 	t.Helper()
-	home = setupHome(t)
 	repo = t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1", dotenv: true},
 		"libs/beta":  {name: "beta", typ: "mock/std/lib@1"},
 	}, map[string]typeSpec{
@@ -46,11 +45,11 @@ func contextFixture(t *testing.T) (home, repo string) {
 	write(repo, ".dev.env", "REGISTRY=repo-dev\n")
 	write(filepath.Join(repo, "libs", "alpha"), ".env", "REGISTRY=alpha-base\nALPHA_ONLY=1\n")
 	// alpha has no overlay; beta opts out entirely
-	return home, repo
+	return repo
 }
 
 func TestContextProjectView(t *testing.T) {
-	_, repo := contextFixture(t)
+	repo := contextFixture(t)
 	t.Chdir(repo)
 
 	out, err := run(t, "libs", "alpha", "--context")
@@ -101,7 +100,7 @@ func TestContextProjectView(t *testing.T) {
 }
 
 func TestContextProjectWithTarget(t *testing.T) {
-	_, repo := contextFixture(t)
+	repo := contextFixture(t)
 	t.Chdir(repo)
 
 	out, err := run(t, "libs", "alpha", "build", "--context")
@@ -119,7 +118,7 @@ func TestContextProjectWithTarget(t *testing.T) {
 }
 
 func TestContextRepoWideTargetView(t *testing.T) {
-	_, repo := contextFixture(t)
+	repo := contextFixture(t)
 	t.Chdir(repo)
 
 	out, err := run(t, "build", "--context")
@@ -146,7 +145,7 @@ func TestContextRepoWideTargetView(t *testing.T) {
 }
 
 func TestContextBareRepoView(t *testing.T) {
-	_, repo := contextFixture(t)
+	repo := contextFixture(t)
 	t.Chdir(repo)
 
 	// Default env: base + overlay listed literally (REGISTRY appears twice).
@@ -175,7 +174,7 @@ func TestContextBareRepoView(t *testing.T) {
 }
 
 func TestContextErrorParityWithRuns(t *testing.T) {
-	_, repo := contextFixture(t)
+	repo := contextFixture(t)
 	t.Chdir(repo)
 
 	// --env test has no overlay at either level: a project view fails with
@@ -196,7 +195,7 @@ func TestContextErrorParityWithRuns(t *testing.T) {
 }
 
 func TestContextNamespaceNeedsProjectOrTarget(t *testing.T) {
-	_, repo := contextFixture(t)
+	repo := contextFixture(t)
 	t.Chdir(repo)
 	if _, err := run(t, "libs", "--context"); err == nil ||
 		!strings.Contains(err.Error(), "needs a project or a target") {

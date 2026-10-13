@@ -28,7 +28,7 @@ import (
 var rawBaseURL = syncpkg.RawBase
 
 func newSyncCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "sync [<name>@<version>...]",
 		Short: "Fetch and verify the project types this repo uses",
 		Long: `Fetch and verify the project types this repo uses.
@@ -42,16 +42,33 @@ Types are fetched over plain HTTP from raw.githubusercontent.com
 sidecar. The sidecar must hash the content. Types already installed whose
 hash matches the lock are reported "up to date". Everything is staged in
 memory; installed files and .smith/lock.json are written only if every
-fetch succeeded.`,
+fetch succeeded.
+
+Fetched types are installed into .smith/types/ — repo-local, checked in by
+default, so a clone builds without a network sync step.
+
+--force re-downloads every type the repo uses (no up-to-date shortcut) and
+rewrites .smith/lock.json from scratch, dropping pins for types the repo
+no longer references. It takes no type arguments.`,
 		Args:         cobra.ArbitraryArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSync(cmd, args)
 		},
 	}
+	cmd.Flags().Bool("force", false,
+		"re-download every type the repo uses and rebuild .smith/lock.json from scratch (takes no type arguments)")
+	return cmd
 }
 
 func runSync(cmd *cobra.Command, args []string) error {
+	force, err := cmd.Flags().GetBool("force")
+	if err != nil {
+		return err
+	}
+	if force && len(args) > 0 {
+		return fmt.Errorf("sync --force takes no type arguments; it re-fetches every type the repo uses and rebuilds the lock")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("smith sync: %w", err)
@@ -77,27 +94,25 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// The lock is consulted lazily, only when a skip decision or the final
 	// merge needs it: fetch failures then surface before complaints about a
 	// stale on-disk lock, and a repo that has nothing installed yet doesn't
-	// need a valid lock to make progress.
+	// need a valid lock to make progress. Under --force the lock starts
+	// empty: every pin is re-derived from what gets fetched.
 	var lk *lock.Lock
 	getLock := func() (*lock.Lock, error) {
 		if lk == nil {
-			loaded, err := loadExistingLock(lockPath)
-			if err != nil {
-				return nil, err
+			if force {
+				lk = &lock.Lock{Version: 1, Types: map[string]lock.TypePin{}}
+			} else {
+				loaded, err := loadExistingLock(lockPath)
+				if err != nil {
+					return nil, err
+				}
+				lk = loaded
 			}
-			lk = loaded
 		}
 		return lk, nil
 	}
 
-	home, err := userHomeDir()
-	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
-	}
-	installRoot := filepath.Join(home, cacheDirName, "project-types")
-	if err := os.MkdirAll(installRoot, 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", installRoot, err)
-	}
+	installRoot := typesDir(repoRoot)
 
 	bases, err := registryBases(cfg)
 	if err != nil {
@@ -112,14 +127,16 @@ func runSync(cmd *cobra.Command, args []string) error {
 	fetched := 0
 	for _, ref := range refs {
 		dest := filepath.Join(installRoot, installRelPath(ref))
-		if data, err := os.ReadFile(dest); err == nil {
-			lockState, err := getLock()
-			if err != nil {
-				return err
-			}
-			if pin, ok := lockState.Types[ref.String()]; ok && pin.Hash == hashBytes(data) {
-				fmt.Fprintf(out, "%s: up to date\n", ref)
-				continue
+		if !force {
+			if data, err := os.ReadFile(dest); err == nil {
+				lockState, err := getLock()
+				if err != nil {
+					return err
+				}
+				if pin, ok := lockState.Types[ref.String()]; ok && pin.Hash == hashBytes(data) {
+					fmt.Fprintf(out, "%s: up to date\n", ref)
+					continue
+				}
 			}
 		}
 
@@ -316,8 +333,8 @@ type stagedInstall struct {
 	content []byte
 }
 
-// installRelPath is the cache path of one installed type, relative to
-// ~/.smith/project-types.
+// installRelPath is the path of one installed type relative to the
+// repo-local types dir (.smith/types).
 func installRelPath(ref typeref.TypeRef) string {
 	return filepath.FromSlash(fmt.Sprintf("%s@v%d.json", ref.Name, ref.Version))
 }

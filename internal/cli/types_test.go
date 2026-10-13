@@ -11,16 +11,16 @@ import (
 	"github.com/cliwright/smith/internal/typeref"
 )
 
-// installTestType writes a type into the injected home's cache and returns
-// its ref and bytes (for lock construction).
-func installTestType(t *testing.T, home string, pt *projecttype.ProjectType) (typeref.TypeRef, []byte) {
+// installTestType writes a type into the repo's .smith/types and returns its
+// ref and bytes (for lock construction).
+func installTestType(t *testing.T, repo string, pt *projecttype.ProjectType) (typeref.TypeRef, []byte) {
 	t.Helper()
 	data, err := projecttype.Marshal(pt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref := typeref.TypeRef{Name: pt.Name, Version: pt.Version}
-	path := filepath.Join(home, cacheDirName, "project-types", installRelPath(ref))
+	path := filepath.Join(repo, cacheDirName, "types", installRelPath(ref))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -69,21 +69,36 @@ func workspaceType() *projecttype.ProjectType {
 	}
 }
 
-// installStandardTypes installs lib@v1, lib@v2, workspace@v1 and returns
-// refs + bytes per ref for lock construction.
-func installStandardTypes(t *testing.T, home string) map[string][]byte {
+// installStandardTypes installs lib@v1, lib@v2, workspace@v1 into the repo's
+// .smith/types and returns refs + bytes per ref for lock construction.
+func installStandardTypes(t *testing.T, repo string) map[string][]byte {
 	t.Helper()
 	bytes := map[string][]byte{}
 	for _, pt := range []*projecttype.ProjectType{libTypeV1(), libTypeV2(), workspaceType()} {
-		ref, data := installTestType(t, home, pt)
+		ref, data := installTestType(t, repo, pt)
 		bytes[ref.String()] = data
 	}
 	return bytes
 }
 
-func TestTypesEmptyCache(t *testing.T) {
-	setupHome(t)
+// typesRepo is an initialized (empty) repo to run `smith types` in: the
+// command is repo-scoped, browsing the enclosing repository's .smith/types.
+func typesRepo(t *testing.T) string {
+	t.Helper()
+	return buildMockRepo(t, []string{"libs"}, nil)
+}
+
+func TestTypesOutsideRepoIsAnError(t *testing.T) {
 	t.Chdir(t.TempDir())
+	_, err := run(t, "types")
+	if err == nil || !strings.Contains(err.Error(), "not a Smith repository") {
+		t.Fatalf("types error = %v, want not-a-repo", err)
+	}
+}
+
+func TestTypesEmptyCache(t *testing.T) {
+	repo := typesRepo(t)
+	t.Chdir(repo)
 
 	out, err := run(t, "types")
 	if err != nil {
@@ -94,28 +109,28 @@ func TestTypesEmptyCache(t *testing.T) {
 	}
 }
 
-func TestTypesListingOutsideRepo(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	t.Chdir(t.TempDir()) // outside any repo: no lock annotations
+// Without a lock every installed type annotates as not pinned.
+func TestTypesListingWithoutLock(t *testing.T) {
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
 
 	out, err := run(t, "types")
 	if err != nil {
 		t.Fatalf("types: %v", err)
 	}
-	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)
-python/astral/lib@2  Python library, v2
-repo/uv/workspace@1  uv workspace root environment
+	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned]
+python/astral/lib@2  Python library, v2  [not pinned]
+repo/uv/workspace@1  uv workspace root environment  [not pinned]
 `
 	if out != want {
 		t.Errorf("listing mismatch:\n%s\nwant:\n%s", out, want)
 	}
 }
 
-func TestTypesListingInRepoAnnotatesLockStatus(t *testing.T) {
-	home := setupHome(t)
-	installed := installStandardTypes(t, home)
-	repo := buildMockRepo(t, []string{"libs"}, nil)
+func TestTypesListingAnnotatesLockStatus(t *testing.T) {
+	repo := typesRepo(t)
+	installed := installStandardTypes(t, repo)
 	t.Chdir(repo)
 
 	// lib@1 pinned correctly; workspace@1 pinned with a drifted hash; lib@2
@@ -142,16 +157,16 @@ repo/uv/workspace@1  uv workspace root environment  [hash mismatch — run smith
 }
 
 func TestTypesNameListsVersions(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	t.Chdir(t.TempDir())
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
 
 	out, err := run(t, "types", "python/astral/lib")
 	if err != nil {
 		t.Fatalf("types python/astral/lib: %v", err)
 	}
-	want := `1  Python library on the Astral toolchain (uv, ruff, ty)
-2  Python library, v2
+	want := `1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned]
+2  Python library, v2  [not pinned]
 `
 	if out != want {
 		t.Errorf("versions mismatch:\n%s\nwant:\n%s", out, want)
@@ -159,9 +174,9 @@ func TestTypesNameListsVersions(t *testing.T) {
 }
 
 func TestTypesUnknownNameListsInstalled(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	t.Chdir(t.TempDir())
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
 
 	_, err := run(t, "types", "python/nope/lib")
 	if err == nil || !strings.Contains(err.Error(), `type "python/nope/lib" is not installed`) ||
@@ -171,9 +186,9 @@ func TestTypesUnknownNameListsInstalled(t *testing.T) {
 }
 
 func TestTypesUnknownVersionListsVersions(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	t.Chdir(t.TempDir())
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
 
 	_, err := run(t, "types", "python/astral/lib@9")
 	if err == nil || !strings.Contains(err.Error(), "type python/astral/lib@9 is not installed") ||
@@ -182,10 +197,10 @@ func TestTypesUnknownVersionListsVersions(t *testing.T) {
 	}
 }
 
-func TestTypesDetailOutsideRepo(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	t.Chdir(t.TempDir())
+func TestTypesDetailWithoutLockShowsNotPinned(t *testing.T) {
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
 
 	out, err := run(t, "types", "python/astral/lib@1")
 	if err != nil {
@@ -209,6 +224,7 @@ func TestTypesDetailOutsideRepo(t *testing.T) {
       uv run pytest -c '{{.config_path}}'
   depends_on:
     build: lint, test
+  status: not pinned
 `
 	if out != want {
 		t.Errorf("detail mismatch:\n%s\nwant:\n%s", out, want)
@@ -216,9 +232,8 @@ func TestTypesDetailOutsideRepo(t *testing.T) {
 }
 
 func TestTypesDetailInRepoShowsStatus(t *testing.T) {
-	home := setupHome(t)
-	installed := installStandardTypes(t, home)
-	repo := buildMockRepo(t, []string{"libs"}, nil)
+	repo := typesRepo(t)
+	installed := installStandardTypes(t, repo)
 	t.Chdir(repo)
 	lk := &lock.Lock{Version: 1, Types: map[string]lock.TypePin{
 		"repo/uv/workspace@1": {Registry: "cliwright", Hash: hashBytes(installed["repo/uv/workspace@1"])},
@@ -246,16 +261,16 @@ func TestTypesDetailInRepoShowsStatus(t *testing.T) {
 }
 
 func TestTypesCorruptFileWarnsAndContinues(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	bogus := filepath.Join(home, cacheDirName, "project-types", "mock", "std")
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	bogus := filepath.Join(repo, cacheDirName, "types", "mock", "std")
 	if err := os.MkdirAll(bogus, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bogus, "broken@v1.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(t.TempDir())
+	t.Chdir(repo)
 
 	out, err := run(t, "types")
 	if err != nil {
@@ -270,9 +285,9 @@ func TestTypesCorruptFileWarnsAndContinues(t *testing.T) {
 }
 
 func TestTypesBadNameArg(t *testing.T) {
-	home := setupHome(t)
-	installStandardTypes(t, home)
-	t.Chdir(t.TempDir())
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
 
 	_, err := run(t, "types", "foo")
 	if err == nil || !strings.Contains(err.Error(), "want <language>/<flavor>/<kind>") {

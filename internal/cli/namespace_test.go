@@ -62,11 +62,11 @@ type typeSpec struct {
 }
 
 // writeDispatchRepo builds an initialized repo with the given manifests and
-// installs (into the injected home) the types they reference, plus a
+// installs (into the repo's .smith/types) the types they reference, plus a
 // matching lock. All types are pinned as registry "cliwright". The optional
 // final argument declares repo_targets (attachments) and installs their
 // types too.
-func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]manifestSpec, typeOverrides map[string]typeSpec, repoTargets ...map[string]config.RepoTarget) {
+func writeDispatchRepo(t *testing.T, repo string, manifests map[string]manifestSpec, typeOverrides map[string]typeSpec, repoTargets ...map[string]config.RepoTarget) {
 	t.Helper()
 	smithDir := filepath.Join(repo, ".smith")
 	if err := os.MkdirAll(smithDir, 0o755); err != nil {
@@ -120,7 +120,7 @@ func writeDispatchRepo(t *testing.T, home, repo string, manifests map[string]man
 		if err != nil {
 			t.Fatal(err)
 		}
-		installPath := filepath.Join(home, cacheDirName, "project-types", installRelPath(ref))
+		installPath := filepath.Join(repo, cacheDirName, "types", installRelPath(ref))
 		if err := os.MkdirAll(filepath.Dir(installPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -208,9 +208,9 @@ func renderManifest(spec manifestSpec) string {
 	return b.String()
 }
 
-func twoLibsFixture(t *testing.T, home, repo string) {
+func twoLibsFixture(t *testing.T, repo string) {
 	t.Helper()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		"libs/beta":  {name: "beta", typ: "mock/std/lib@1"},
 	}, map[string]typeSpec{
@@ -222,9 +222,8 @@ func twoLibsFixture(t *testing.T, home, repo string) {
 }
 
 func TestNsListProjects(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	for _, args := range [][]string{{"libs"}, {"libs", "list"}} {
@@ -239,9 +238,8 @@ func TestNsListProjects(t *testing.T) {
 }
 
 func TestNsListTargets(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	out, err := run(t, "libs", "alpha", "list")
@@ -254,9 +252,8 @@ func TestNsListTargets(t *testing.T) {
 }
 
 func TestNsRunSingleRunsClosure(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		"libs/beta": {name: "beta", typ: "mock/std/lib@1",
 			deps: []manifest.Dependency{{Project: "alpha", Targets: []string{"build"}, Before: []string{"build"}}}},
@@ -286,9 +283,8 @@ func TestNsRunSingleRunsClosure(t *testing.T) {
 }
 
 func TestNsRunNsWideSkipsAndReports(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		"libs/beta":  {name: "beta", typ: "mock/std/other@1"},
 	}, map[string]typeSpec{
@@ -316,9 +312,8 @@ func TestNsRunNsWideSkipsAndReports(t *testing.T) {
 }
 
 func TestRunRepoWide(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	f := &fakeExec{}
@@ -332,10 +327,9 @@ func TestRunRepoWide(t *testing.T) {
 }
 
 func TestTargetWinsOverProjectName(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
 	// A project NAMED "test" whose type also declares a "test" target.
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		"libs/test":  {name: "test", typ: "mock/std/lib@1"},
 	}, map[string]typeSpec{
@@ -367,9 +361,8 @@ func TestTargetWinsOverProjectName(t *testing.T) {
 }
 
 func TestNsUnknownProjectListsExisting(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	_, err := run(t, "libs", "nosuch", "list")
@@ -380,9 +373,8 @@ func TestNsUnknownProjectListsExisting(t *testing.T) {
 }
 
 func TestNsUnknownTargetOnProject(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	_, err := run(t, "libs", "alpha", "nosuch")
@@ -393,9 +385,8 @@ func TestNsUnknownTargetOnProject(t *testing.T) {
 }
 
 func TestNsNoProjectHasTarget(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	_, err := run(t, "libs", "lint")
@@ -405,9 +396,8 @@ func TestNsNoProjectHasTarget(t *testing.T) {
 }
 
 func TestNsParallelWarning(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	f := &fakeExec{}
@@ -425,13 +415,12 @@ func TestNsParallelWarning(t *testing.T) {
 }
 
 func TestNsLockMismatchIsHardError(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
 	// Tamper with the installed type after the lock was written.
-	installPath := filepath.Join(home, cacheDirName, "project-types", filepath.FromSlash("mock/std/lib@v1.json"))
+	installPath := filepath.Join(repo, cacheDirName, "types", filepath.FromSlash("mock/std/lib@v1.json"))
 	if err := os.WriteFile(installPath, []byte(`{"name":"mock/lib"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -444,9 +433,8 @@ func TestNsLockMismatchIsHardError(t *testing.T) {
 }
 
 func TestNsMissingLockIsHardError(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	twoLibsFixture(t, home, repo)
+	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 	if err := os.Remove(filepath.Join(repo, ".smith", "lock.json")); err != nil {
 		t.Fatal(err)
@@ -459,9 +447,8 @@ func TestNsMissingLockIsHardError(t *testing.T) {
 }
 
 func TestNsCycleErrorSurfaces(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, map[string]typeSpec{
 		"mock/std/lib@1": {
@@ -480,10 +467,9 @@ func TestNsCycleErrorSurfaces(t *testing.T) {
 // TestNsRealExecution runs real shell steps end to end: order, closure,
 // fail-fast, and stdio come from the actual runner.
 func TestNsRealExecution(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
 	markers := filepath.Join(t.TempDir(), "markers")
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		"libs/beta": {name: "beta", typ: "mock/std/lib@1",
 			deps: []manifest.Dependency{{Project: "alpha", Targets: []string{"build"}, Before: []string{"build"}}}},
@@ -527,9 +513,8 @@ var workspaceTypeSpec = map[string]typeSpec{
 }
 
 func TestRepoListsAttachments(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, nil, workspaceTarget)
 	t.Chdir(repo)
@@ -546,9 +531,8 @@ func TestRepoListsAttachments(t *testing.T) {
 }
 
 func TestRepoListsAttachmentTargets(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, workspaceTypeSpec, workspaceTarget)
 	t.Chdir(repo)
@@ -572,9 +556,8 @@ func TestRepoListsAttachmentTargets(t *testing.T) {
 }
 
 func TestRepoRunsAttachmentAtRepoRoot(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, workspaceTypeSpec, workspaceTarget)
 	t.Chdir(repo)
@@ -596,9 +579,8 @@ func TestRepoRunsAttachmentAtRepoRoot(t *testing.T) {
 }
 
 func TestRepoUnknownAliasListsKnown(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, workspaceTypeSpec, workspaceTarget)
 	t.Chdir(repo)
@@ -611,9 +593,8 @@ func TestRepoUnknownAliasListsKnown(t *testing.T) {
 }
 
 func TestRepoUnknownTargetListsTargets(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, workspaceTypeSpec, workspaceTarget)
 	t.Chdir(repo)
@@ -626,9 +607,8 @@ func TestRepoUnknownTargetListsTargets(t *testing.T) {
 }
 
 func TestRepoNoAttachments(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, nil)
 	t.Chdir(repo)
@@ -646,9 +626,8 @@ func TestRepoNoAttachments(t *testing.T) {
 // TestRepoReservedNamespaceShadowsRoot: "repo" dispatches to attachments
 // even when a project_root directory is literally named "repo".
 func TestRepoReservedNamespaceShadowsRoot(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"repo/inner": {name: "inner", typ: "mock/std/lib@1"},
 	}, nil, workspaceTarget)
 	// Declare a "repo" project root (shadowed by the synthetic namespace).

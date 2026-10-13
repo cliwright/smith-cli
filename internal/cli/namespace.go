@@ -130,10 +130,7 @@ func (rc *repoContext) typeFor(p discovery.Project) (*projecttype.ProjectType, e
 	if !ok {
 		return nil, fmt.Errorf("type %s is not pinned in %s; run smith sync", ref, filepath.Join(cacheDirName, lockJSONName))
 	}
-	path, err := rc.installedPath(ref)
-	if err != nil {
-		return nil, err
-	}
+	path := rc.installedPath(ref)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("installed type %s is missing (%s); run smith sync", ref, path)
@@ -149,12 +146,18 @@ func (rc *repoContext) typeFor(p discovery.Project) (*projecttype.ProjectType, e
 	return pt, nil
 }
 
-func (rc *repoContext) installedPath(ref typeref.TypeRef) (string, error) {
-	home, err := userHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("finding home directory: %w", err)
-	}
-	return filepath.Join(home, cacheDirName, "project-types", installRelPath(ref)), nil
+// typesDir is the repo-local install root for fetched project types:
+// .smith/types. Types live inside the repo (checked in by default) so a
+// clone builds without a sync step; the lock still pins every type's hash
+// and load verifies the installed copy against it.
+func typesDir(repoRoot string) string {
+	return filepath.Join(repoRoot, cacheDirName, "types")
+}
+
+// installedPath resolves the repo-local installed copy of ref under
+// .smith/types.
+func (rc *repoContext) installedPath(ref typeref.TypeRef) string {
+	return filepath.Join(typesDir(rc.repoRoot), installRelPath(ref))
 }
 
 // namespaces are the first path segments of the declared project_roots.

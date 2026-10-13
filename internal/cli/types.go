@@ -26,12 +26,13 @@ var typeNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*){2}$
 func newTypesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "types [<name>[@<version>]]",
-		Short: "Browse the installed project-type registry",
-		Long: `Browse the locally installed project types (the global cache in
-~/.smith/project-types). Works outside a Smith repository.
+		Short: "Browse the project types installed in this repository",
+		Long: `Browse the project types installed in this repository's
+.smith/types directory (repo-local — checked in by default, so a clone
+builds without a sync step). Requires a Smith repository.
 
-With no arguments, lists every installed type, sorted by name then version.
-Inside a repository each entry is annotated with its lock status: pinned,
+With no arguments, lists every installed type, sorted by name then version,
+each annotated with its lock status from .smith/lock.json: pinned,
 not pinned, or hash mismatch — run smith sync. With a name, lists every
 installed version of that type; with name@version, prints the full
 definition: description, capabilities, tools, working_dir, params,
@@ -44,7 +45,7 @@ environment, targets, and target depends_on.`,
 	}
 }
 
-// installedType is one type found in the global cache.
+// installedType is one type found in the repo's .smith/types.
 type installedType struct {
 	ref  typeref.TypeRef
 	path string
@@ -55,11 +56,15 @@ type installedType struct {
 func runTypes(cmd *cobra.Command, args []string) error {
 	out := stdout(cmd)
 
-	home, err := userHomeDir()
+	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
+		return fmt.Errorf("smith types: %w", err)
 	}
-	installRoot := filepath.Join(home, cacheDirName, "project-types")
+	repoRoot, err := discovery.FindRepoRoot(cwd)
+	if err != nil {
+		return err
+	}
+	installRoot := typesDir(repoRoot)
 
 	installed, warnings, err := scanInstalledTypes(installRoot)
 	if err != nil {
@@ -69,19 +74,25 @@ func runTypes(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "warning: %s\n", warning)
 	}
 	if len(installed) == 0 {
-		fmt.Fprintf(out, "no project types installed in %s yet — run smith sync to fetch the types this repo uses\n", installRoot)
+		fmt.Fprintf(out, "no project types installed in %s yet — run smith sync to fetch the types this repo uses\n",
+			filepath.Join(cacheDirName, "types"))
 		return nil
 	}
 
-	// Inside a repo, annotate with lock status; outside, no annotation.
-	repoLock, inRepo, lockErr := optionalRepoLock()
-	if lockErr != nil {
-		fmt.Fprintf(out, "warning: %s\n", lockErr)
+	// Every type is annotated with its chain-of-custody status against the
+	// repo's lock; a lock that exists but cannot load is a warning, and a
+	// missing lock means nothing is pinned yet.
+	repoLock := &lock.Lock{Version: 1, Types: map[string]lock.TypePin{}}
+	loaded, err := lock.Load(filepath.Join(repoRoot, cacheDirName, lockJSONName))
+	switch {
+	case err == nil:
+		repoLock = loaded
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		fmt.Fprintf(out, "warning: could not load %s: %v (treating every type as not pinned)\n",
+			filepath.Join(cacheDirName, lockJSONName), err)
 	}
 	status := func(it installedType) string {
-		if !inRepo {
-			return ""
-		}
 		return lockStatus(repoLock, it.ref, it.data)
 	}
 
@@ -103,7 +114,7 @@ func runTypes(cmd *cobra.Command, args []string) error {
 	return showTypeVersions(out, installed, arg, status)
 }
 
-// scanInstalledTypes walks the cache, loading every project-type.json it
+// scanInstalledTypes walks .smith/types, loading every project-type.json it
 // finds. Corrupt or unloadable files are reported as warnings; the listing
 // continues. Sorted by name, then version.
 func scanInstalledTypes(installRoot string) ([]installedType, []string, error) {
@@ -147,30 +158,6 @@ func scanInstalledTypes(installRoot string) ([]installedType, []string, error) {
 		return installed[i].ref.Version < installed[j].ref.Version
 	})
 	return installed, warnings, nil
-}
-
-// optionalRepoLock loads .smith/lock.json when cwd is inside a repository.
-// Outside a repo it reports (nil, false, nil); a lock that exists but cannot
-// be loaded is a warning, not an error.
-func optionalRepoLock() (*lock.Lock, bool, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, false, err
-	}
-	repoRoot, err := discovery.FindRepoRoot(cwd)
-	if err != nil {
-		return nil, false, nil
-	}
-	lockPath := filepath.Join(repoRoot, cacheDirName, lockJSONName)
-	lk, err := lock.Load(lockPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return &lock.Lock{Version: 1, Types: map[string]lock.TypePin{}}, true, nil
-	}
-	if err != nil {
-		return &lock.Lock{Version: 1, Types: map[string]lock.TypePin{}}, true,
-			fmt.Errorf("could not load %s: %v (treating every type as not pinned)", filepath.Join(cacheDirName, lockJSONName), err)
-	}
-	return lk, true, nil
 }
 
 // lockStatus annotates one installed type with its chain-of-custody status

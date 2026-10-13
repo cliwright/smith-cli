@@ -99,8 +99,8 @@ func lockPathIn(repo string) string {
 	return filepath.Join(repo, cacheDirName, lockJSONName)
 }
 
-func installedPath(home, ref string) string {
-	return filepath.Join(home, cacheDirName, "project-types", filepath.FromSlash(ref)+".json")
+func installedPath(repo, ref string) string {
+	return filepath.Join(repo, cacheDirName, "types", filepath.FromSlash(ref)+".json")
 }
 
 var testRegs = []regEntry{
@@ -109,7 +109,6 @@ var testRegs = []regEntry{
 }
 
 func TestSyncFetchesManifestRefs(t *testing.T) {
-	home := setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
@@ -125,7 +124,7 @@ func TestSyncFetchesManifestRefs(t *testing.T) {
 		t.Fatalf("sync: %v\noutput:\n%s", err, out)
 	}
 
-	installed, err := os.ReadFile(installedPath(home, "python/astral/lib@v1"))
+	installed, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
 	if err != nil {
 		t.Fatalf("installed type missing: %v", err)
 	}
@@ -157,7 +156,6 @@ func TestSyncFetchesManifestRefs(t *testing.T) {
 }
 
 func TestSyncExplicitRefs(t *testing.T) {
-	home := setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
@@ -170,7 +168,7 @@ func TestSyncExplicitRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v\noutput:\n%s", err, out)
 	}
-	if _, err := os.Stat(installedPath(home, "python/astral/lib@v1")); err != nil {
+	if _, err := os.Stat(installedPath(repo, "python/astral/lib@v1")); err != nil {
 		t.Errorf("installed type missing: %v", err)
 	}
 	lk, err := lock.Load(lockPathIn(repo))
@@ -183,7 +181,6 @@ func TestSyncExplicitRefs(t *testing.T) {
 }
 
 func TestSyncFallsBackToSecondRegistry(t *testing.T) {
-	home := setupHome(t)
 	f := newFakeRegistries(t)
 	// cliwright does not serve the type; acme does.
 	f.serveType("acme/types", "python/astral/lib", 1, testTypeContent)
@@ -207,13 +204,12 @@ func TestSyncFallsBackToSecondRegistry(t *testing.T) {
 	if !strings.Contains(out, "fetched from acme") {
 		t.Errorf("sync output missing fallback notice:\n%s", out)
 	}
-	if _, err := os.Stat(installedPath(home, "python/astral/lib@v1")); err != nil {
+	if _, err := os.Stat(installedPath(repo, "python/astral/lib@v1")); err != nil {
 		t.Errorf("installed type missing: %v", err)
 	}
 }
 
 func TestSyncNotFoundNamesTheRef(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	useFakeRegistries(t, f)
 
@@ -234,7 +230,6 @@ func TestSyncNotFoundNamesTheRef(t *testing.T) {
 }
 
 func TestSyncSidecarMismatch(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	f.corruptSidecar("cliwright/types", "python/astral/lib", 1)
@@ -254,7 +249,6 @@ func TestSyncSidecarMismatch(t *testing.T) {
 }
 
 func TestSyncSecondRunUpToDate(t *testing.T) {
-	home := setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
@@ -285,11 +279,11 @@ func TestSyncSecondRunUpToDate(t *testing.T) {
 	if string(lockAfter) != string(lockBefore) {
 		t.Errorf("second run rewrote the lock:\nbefore: %s\nafter: %s", lockBefore, lockAfter)
 	}
-	installedBefore, err := os.ReadFile(installedPath(home, "python/astral/lib@v1"))
+	installedBefore, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	installedAfter, err := os.ReadFile(installedPath(home, "python/astral/lib@v1"))
+	installedAfter, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +293,6 @@ func TestSyncSecondRunUpToDate(t *testing.T) {
 }
 
 func TestSyncNoLockWhenAnyRefFails(t *testing.T) {
-	home := setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
@@ -319,13 +312,12 @@ func TestSyncNoLockWhenAnyRefFails(t *testing.T) {
 		t.Errorf("lock written despite failure (stat err = %v)", err)
 	}
 	// The successful fetch was staged in memory only — nothing installed.
-	if _, err := os.Stat(installedPath(home, "python/astral/lib@v1")); !os.IsNotExist(err) {
+	if _, err := os.Stat(installedPath(repo, "python/astral/lib@v1")); !os.IsNotExist(err) {
 		t.Errorf("type installed despite later failure (stat err = %v)", err)
 	}
 }
 
 func TestSyncNoRefsNoop(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	useFakeRegistries(t, f)
 
@@ -348,7 +340,6 @@ func TestSyncNoRefsNoop(t *testing.T) {
 // TestSyncUnionsAttachmentTypes: repo_targets types join the manifest-derived
 // fetch set and are pinned in the lock like any other type.
 func TestSyncUnionsAttachmentTypes(t *testing.T) {
-	home := setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	f.serveType("cliwright/types", "repo/uv/workspace", 1, `{"name":"repo/uv/workspace","version":1,"description":"uv workspace root environment","tools":["uv"],"targets":{"setup":["uv venv"]}}`)
@@ -396,13 +387,12 @@ func TestSyncUnionsAttachmentTypes(t *testing.T) {
 	if !ok || attPin.Registry != "cliwright" {
 		t.Errorf("attachment pin = %+v (present %v)", attPin, ok)
 	}
-	if _, err := os.Stat(installedPath(home, "repo/uv/workspace@v1")); err != nil {
+	if _, err := os.Stat(installedPath(repo, "repo/uv/workspace@v1")); err != nil {
 		t.Errorf("attachment type not installed: %v", err)
 	}
 }
 
 func TestSyncOutsideRepo(t *testing.T) {
-	setupHome(t)
 	t.Chdir(t.TempDir())
 	_, err := run(t, "sync")
 	if err == nil || !strings.Contains(err.Error(), "not a Smith repository") {
@@ -433,7 +423,6 @@ func writeToolsRepo(t *testing.T, repo, toolsLine string) {
 }
 
 func TestSyncUnionsToolsIntoRepoYML(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
@@ -487,7 +476,6 @@ func TestSyncUnionsToolsIntoRepoYML(t *testing.T) {
 }
 
 func TestSyncToolsUnionSkipsExisting(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
@@ -509,7 +497,6 @@ func TestSyncToolsUnionSkipsExisting(t *testing.T) {
 }
 
 func TestSyncToolsUnionOnlyOnSuccess(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	useFakeRegistries(t, f)
 
@@ -535,7 +522,6 @@ func TestSyncToolsUnionOnlyOnSuccess(t *testing.T) {
 // missing from every registry — the lock is only consulted for skip
 // decisions and the final merge.
 func TestSyncFetchErrorsSurfaceBeforeStaleLock(t *testing.T) {
-	setupHome(t)
 	f := newFakeRegistries(t)
 	useFakeRegistries(t, f)
 
@@ -564,5 +550,93 @@ func TestSyncFetchErrorsSurfaceBeforeStaleLock(t *testing.T) {
 	}
 	if string(lockAfter) != string(lockBefore) {
 		t.Error("failed sync rewrote the stale lock")
+	}
+}
+
+func TestSyncForceRefetchesAndRestoresInstalled(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, map[string][2]string{
+		"libs/demo": {"demo", "python/astral/lib@1"},
+	})
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync"); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	// Tamper with the installed copy; a plain sync would still call it up to
+	// date (the lock matches), but --force must re-download and restore it.
+	if err := os.WriteFile(installedPath(repo, "python/astral/lib@v1"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "sync", "--force")
+	if err != nil {
+		t.Fatalf("sync --force: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "fetched from cliwright") || strings.Contains(out, "up to date") {
+		t.Errorf("force output missing the re-fetch:\n%s", out)
+	}
+	restored, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != testTypeContent {
+		t.Errorf("installed content = %q, want the registry bytes restored", restored)
+	}
+}
+
+func TestSyncForceRebuildsLockFromScratch(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, map[string][2]string{
+		"libs/demo": {"demo", "python/astral/lib@1"},
+	})
+	t.Chdir(repo)
+
+	// Seed a lock pinning a type the repo no longer references.
+	lk := &lock.Lock{Version: 1, Types: map[string]lock.TypePin{
+		"python/astral/lib@1": {Registry: "cliwright", Hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+		"mock/stale/lib@1":    {Registry: "cliwright", Hash: "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+	}}
+	if err := lock.Save(lockPathIn(repo), lk); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "sync", "--force")
+	if err != nil {
+		t.Fatalf("sync --force: %v\noutput:\n%s", err, out)
+	}
+	rebuilt, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatalf("lock.Load: %v", err)
+	}
+	if _, ok := rebuilt.Types["mock/stale/lib@1"]; ok {
+		t.Errorf("stale pin survived the from-scratch rebuild: %v", rebuilt.Types)
+	}
+	pin, ok := rebuilt.Types["python/astral/lib@1"]
+	if !ok {
+		t.Fatalf("fresh pin missing after force rebuild")
+	}
+	sum := sha256.Sum256([]byte(testTypeContent))
+	if want := fmt.Sprintf("sha256:%x", sum[:]); pin.Hash != want {
+		t.Errorf("pin.Hash = %q, want the freshly fetched hash %q", pin.Hash, want)
+	}
+}
+
+func TestSyncForceRejectsTypeArguments(t *testing.T) {
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, nil)
+	t.Chdir(repo)
+
+	_, err := run(t, "sync", "--force", "python/astral/lib@1")
+	if err == nil || !strings.Contains(err.Error(), "takes no type arguments") {
+		t.Fatalf("error = %v, want the args guard", err)
 	}
 }

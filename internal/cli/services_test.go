@@ -38,8 +38,8 @@ components:
 // builds auth-core, packages auth-lambda, and applies auth-tofu. Projects
 // deliberately live under both libs/ and services/ (the service namespace
 // root) to prove projects and service files coexist there.
-func authServiceFixture(t *testing.T, home, repo string) {
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+func authServiceFixture(t *testing.T, repo string) {
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/shared":          {name: "shared", typ: "mock/python/lib@1"},
 		"libs/auth-core":       {name: "auth-core", typ: "mock/python/lib@1", deps: []manifest.Dependency{{Project: "shared", Targets: []string{"build"}, Before: []string{"build"}}}},
 		"services/auth-lambda": {name: "auth-lambda", typ: "mock/docker/image@1", deps: []manifest.Dependency{{Project: "auth-core", Targets: []string{"build"}, Before: []string{"package"}}}},
@@ -53,9 +53,8 @@ func authServiceFixture(t *testing.T, home, repo string) {
 }
 
 func TestServicesList(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	writeServiceFiles(t, repo, map[string]string{
 		"zz.yml": "version: 1\nname: zeta\ncomponents:\n  - project: shared\n",
 	})
@@ -71,9 +70,8 @@ func TestServicesList(t *testing.T) {
 }
 
 func TestServicesListEmpty(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, nil)
 	t.Chdir(repo)
@@ -88,9 +86,8 @@ func TestServicesListEmpty(t *testing.T) {
 }
 
 func TestServicesUnknownServiceListsKnown(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	_, err := run(t, "services", "ghost")
@@ -100,9 +97,8 @@ func TestServicesUnknownServiceListsKnown(t *testing.T) {
 }
 
 func TestServicesShow(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	out, err := run(t, "services", "auth")
@@ -125,9 +121,8 @@ func TestServicesShow(t *testing.T) {
 }
 
 func TestServicesRunDeployWalkthrough(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	f := &fakeExec{}
@@ -148,9 +143,8 @@ func TestServicesRunDeployWalkthrough(t *testing.T) {
 }
 
 func TestServicesRunBuildMapsAndSkips(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	f := &fakeExec{}
@@ -169,9 +163,8 @@ func TestServicesRunBuildMapsAndSkips(t *testing.T) {
 }
 
 func TestServicesRunTestSkipsNonImplementors(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	f := &fakeExec{}
@@ -189,9 +182,8 @@ func TestServicesRunTestSkipsNonImplementors(t *testing.T) {
 }
 
 func TestServicesRunRejectsOutOfVocabularyTarget(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	_, err := run(t, "services", "auth", "frisbee")
@@ -201,9 +193,8 @@ func TestServicesRunRejectsOutOfVocabularyTarget(t *testing.T) {
 }
 
 func TestServicesRunNoImplementor(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	writeServiceFiles(t, repo, map[string]string{
 		"core.yml": "version: 1\nname: core-only\ncomponents:\n  - project: auth-core\n",
 	})
@@ -216,9 +207,8 @@ func TestServicesRunNoImplementor(t *testing.T) {
 }
 
 func TestServicesGraphTargetPrintsOrderWithoutRunning(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	f := &fakeExec{}
@@ -247,9 +237,8 @@ func TestServicesGraphTargetPrintsOrderWithoutRunning(t *testing.T) {
 }
 
 func TestServicesGraphBareShowsComponentDependencies(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	out, err := run(t, "services", "auth", "graph")
@@ -269,9 +258,8 @@ func TestServicesGraphBareShowsComponentDependencies(t *testing.T) {
 }
 
 func TestServicesGraphDetectsProjectLevelCycle(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/cyc-a": {name: "cyc-a", typ: "mock/std/lib@1", deps: []manifest.Dependency{{Project: "cyc-b", Targets: []string{"build"}, Before: []string{"build"}}}},
 		"libs/cyc-b": {name: "cyc-b", typ: "mock/std/lib@1", deps: []manifest.Dependency{{Project: "cyc-a", Targets: []string{"build"}, Before: []string{"build"}}}},
 	}, nil)
@@ -292,9 +280,8 @@ func TestServicesGraphDetectsProjectLevelCycle(t *testing.T) {
 }
 
 func TestServicesBrokenFileFailsLoudly(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, nil)
 	writeServiceFiles(t, repo, map[string]string{
@@ -313,9 +300,8 @@ func TestServicesBrokenFileFailsLoudly(t *testing.T) {
 }
 
 func TestServicesUnknownComponentFailsLoudly(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 	}, nil)
 	writeServiceFiles(t, repo, map[string]string{
@@ -330,9 +316,8 @@ func TestServicesUnknownComponentFailsLoudly(t *testing.T) {
 }
 
 func TestServicesTooManyArguments(t *testing.T) {
-	home := setupHome(t)
 	repo := t.TempDir()
-	authServiceFixture(t, home, repo)
+	authServiceFixture(t, repo)
 	t.Chdir(repo)
 
 	_, err := run(t, "services", "auth", "graph", "deploy", "extra")

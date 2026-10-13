@@ -13,7 +13,7 @@
       "const": 1
     },
     "types": {
-      "description": "Pinned project types, keyed by name@version. Hash must match the registry sidecar and the installed copy in ~/.smith (chain of custody enforced by smith).",
+      "description": "Pinned project types, keyed by name@version. Hash must match the registry sidecar and the installed copy in .smith/types (chain of custody enforced by smith).",
       "type": "object",
       "patternProperties": {
         "^[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*){2}@[1-9][0-9]*$": {
@@ -29,7 +29,7 @@
             "hash": {
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$",
-              "description": "Must match the registry sidecar and the installed copy in ~/.smith. A mismatch at load time is a hard error prompting `smith sync` — never a silent content swap."
+              "description": "Must match the registry sidecar and the installed copy in .smith/types. A mismatch at load time is a hard error prompting `smith sync` — never a silent content swap."
             }
           }
         }

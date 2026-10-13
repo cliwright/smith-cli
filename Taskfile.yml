@@ -10,10 +10,10 @@ tasks:
     cmds:
       - rm -f bin/smith
 
-  clean-home:
-    desc: remove the .smith dir in the home directory
+  clean-types:
+    desc: Remove the repo-local installed project types (they re-fetch with smith sync)
     cmds:
-      - rm -rf ~/.smith
+      - rm -rf .smith/types
 
   build:
     desc: "Build the smith CLI to bin/smith"

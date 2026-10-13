@@ -12,24 +12,12 @@ import (
 	"github.com/cliwright/smith/internal/lock"
 )
 
-// setupHome redirects the global cache root into a temp dir for the duration
-// of the test, so init never touches the real $HOME.
-func setupHome(t *testing.T) string {
-	t.Helper()
-	home := t.TempDir()
-	old := userHomeDir
-	userHomeDir = func() (string, error) { return home, nil }
-	t.Cleanup(func() { userHomeDir = old })
-	return home
-}
-
 func artifactPaths(dir string) (repoYML, lockJSON string) {
 	return filepath.Join(dir, cacheDirName, repoYMLName),
 		filepath.Join(dir, cacheDirName, lockJSONName)
 }
 
 func TestInitFreshDir(t *testing.T) {
-	home := setupHome(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
 
@@ -39,7 +27,7 @@ func TestInitFreshDir(t *testing.T) {
 	}
 
 	repoYML, lockJSON := artifactPaths(dir)
-	for _, p := range []string{repoYML, lockJSON, filepath.Join(home, cacheDirName)} {
+	for _, p := range []string{repoYML, lockJSON} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("artifact %s missing: %v", p, err)
 		}
@@ -94,7 +82,6 @@ func TestInitFreshDir(t *testing.T) {
 }
 
 func TestInitIsIdempotent(t *testing.T) {
-	setupHome(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
 	repoYML, lockJSON := artifactPaths(dir)
@@ -132,31 +119,5 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 	if !bytes.Equal(lockAfter, lockBefore) {
 		t.Errorf("second init modified %s", lockJSON)
-	}
-}
-
-func TestInitKeepsExistingCacheRoot(t *testing.T) {
-	home := setupHome(t)
-	cacheRoot := filepath.Join(home, cacheDirName)
-	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sentinel := filepath.Join(cacheRoot, "sentinel.txt")
-	if err := os.WriteFile(sentinel, []byte("keep me"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	dir := t.TempDir()
-	t.Chdir(dir)
-	if _, err := run(t, "init"); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-
-	data, err := os.ReadFile(sentinel)
-	if err != nil {
-		t.Fatalf("cache root clobbered: %v", err)
-	}
-	if string(data) != "keep me" {
-		t.Errorf("sentinel = %q, want %q", data, "keep me")
 	}
 }

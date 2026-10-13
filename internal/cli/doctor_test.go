@@ -27,7 +27,7 @@ func makeFakeTools(t *testing.T, scripts map[string]string) {
 // repo tools (cookiecutter), project types (python/uv for alpha, smith-test-widget for
 // beta), and an attachment (uv for repo:python).
 func doctorFixture(t *testing.T) string {
-	return doctorFixtureWithHome(t, setupHome(t))
+	return doctorFixtureRepo(t)
 }
 
 func TestDoctorHealthy(t *testing.T) {
@@ -107,8 +107,7 @@ func TestDoctorVersionProbeFallsBackToUnknown(t *testing.T) {
 }
 
 func TestDoctorUnloadableTypeIsAFinding(t *testing.T) {
-	home := setupHome(t)
-	repo := doctorFixtureWithHome(t, home)
+	repo := doctorFixtureRepo(t)
 	makeFakeTools(t, map[string]string{
 		"cookiecutter":      `echo "fake-cc 1.0"`,
 		"smith-test-widget": `echo "widget 2.0"`,
@@ -119,7 +118,7 @@ func TestDoctorUnloadableTypeIsAFinding(t *testing.T) {
 
 	// Tamper with alpha's installed type: custody check fails, but the
 	// doctor keeps checking the rest.
-	installPath := filepath.Join(home, cacheDirName, "project-types", filepath.FromSlash("mock/std/lib@v1.json"))
+	installPath := filepath.Join(repo, cacheDirName, "types", filepath.FromSlash("mock/std/lib@v1.json"))
 	if err := os.WriteFile(installPath, []byte(`{"name":"mock/lib"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -139,11 +138,12 @@ func TestDoctorUnloadableTypeIsAFinding(t *testing.T) {
 	}
 }
 
-// doctorFixtureWithHome is doctorFixture with an injected home so tampering
-// tests can reach the installed types.
-func doctorFixtureWithHome(t *testing.T, home string) string {
+// doctorFixtureRepo builds the doctor fixture repo. Installed types live
+// repo-locally (.smith/types), so tampering tests reach them through the
+// repo path.
+func doctorFixtureRepo(t *testing.T) string {
 	repo := t.TempDir()
-	writeDispatchRepo(t, home, repo, map[string]manifestSpec{
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
 		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
 		"libs/beta":  {name: "beta", typ: "mock/std/other@1"},
 	}, map[string]typeSpec{

@@ -30,19 +30,16 @@ const (
 	lockJSONName    = "lock.json"
 )
 
-// userHomeDir locates the home directory; it is a variable so tests can
-// point the global cache root at a temp dir instead of the real $HOME.
-var userHomeDir = os.UserHomeDir
-
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
 		Short: "Initialize the current directory as a Smith repository",
 		Long: `Initialize the current directory as a Smith repository.
 
-Creates .smith/repo.yml (repository configuration), .smith/lock.json (empty,
-ready to commit), and the ~/.smith cache root for fetched project types.
-If the directory is already initialized, does nothing.`,
+Creates .smith/repo.yml (repository configuration) and .smith/lock.json
+(empty, ready to commit). Fetched project types install repo-locally into
+.smith/types/ — checked in by default, so a clone builds without a sync
+step. If the directory is already initialized, does nothing.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -79,11 +76,6 @@ func runInit(cmd *cobra.Command) error {
 		return err
 	}
 
-	cacheRoot, err := ensureCacheRoot()
-	if err != nil {
-		return err
-	}
-
 	// Self-check: the artifacts we just wrote must load back through their
 	// packages, which also validates them against the embedded schemas.
 	// This fails loudly if the template and the schemas ever drift apart.
@@ -99,11 +91,10 @@ func runInit(cmd *cobra.Command) error {
 	fmt.Fprintln(out, "Created:")
 	fmt.Fprintf(out, "  %s    repository configuration\n", filepath.Join(cacheDirName, repoYMLName))
 	fmt.Fprintf(out, "  %s   lock file (nothing pinned until the first sync)\n", filepath.Join(cacheDirName, lockJSONName))
-	fmt.Fprintf(out, "  %s   global cache root for project types\n", cacheRoot)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Next steps:")
 	fmt.Fprintln(out, "  - commit .smith/ so everyone shares this configuration")
-	fmt.Fprintln(out, "  - run smith sync when you need project types")
+	fmt.Fprintln(out, "  - run smith sync when you need project types (they install into .smith/types/)")
 	return nil
 }
 
@@ -139,18 +130,4 @@ func writeLockJSON(path string) error {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil
-}
-
-// ensureCacheRoot creates ~/.smith if missing and returns its path. An
-// existing directory is left untouched.
-func ensureCacheRoot() (string, error) {
-	home, err := userHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("finding home directory: %w", err)
-	}
-	cacheRoot := filepath.Join(home, cacheDirName)
-	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
-		return "", fmt.Errorf("creating %s: %w", cacheRoot, err)
-	}
-	return cacheRoot, nil
 }
