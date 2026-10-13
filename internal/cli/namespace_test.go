@@ -53,6 +53,7 @@ type manifestSpec struct {
 	typ    string
 	deps   []manifest.Dependency
 	dotenv bool // opt the project into dotenv loading (smith.yml dotenv: true)
+	params map[string]string
 }
 
 type typeSpec struct {
@@ -62,6 +63,8 @@ type typeSpec struct {
 	wd      projecttype.WorkingDir
 	tools   []string
 	env     map[string]string // type-level environment entries
+	params  map[string]projecttype.Param
+	files   map[string]string // extra files packed into the installed ingot (e.g. help/*.md)
 }
 
 // writeDispatchRepo builds an initialized repo with the given manifests and
@@ -118,12 +121,17 @@ func writeDispatchRepo(t *testing.T, repo string, manifests map[string]manifestS
 			Targets:     targetsFromSteps(ts.targets, ts.descs),
 			DependsOn:   ts.deps,
 			Environment: ts.env,
+			Params:      ts.params,
 		}
 		data, err := projecttype.Marshal(pt)
 		if err != nil {
 			t.Fatal(err)
 		}
-		hash := installIngotForTest(t, repo, ref, map[string]string{"project-type.json": string(data)})
+		files := map[string]string{"project-type.json": string(data)}
+		for name, content := range ts.files {
+			files[name] = content
+		}
+		hash := installIngotForTest(t, repo, ref, files)
 		pins[ref.String()] = lock.TypePin{Registry: "cliwright", Hash: hash}
 	}
 	for dir, spec := range manifests {
@@ -199,6 +207,12 @@ func renderManifest(spec manifestSpec) string {
 	fmt.Fprintf(&b, "version: 1\nname: %s\ntype: %s\n", spec.name, spec.typ)
 	if spec.dotenv {
 		b.WriteString("dotenv: true\n")
+	}
+	if len(spec.params) > 0 {
+		b.WriteString("params:\n")
+		for _, key := range sortedStringKeys(spec.params) {
+			fmt.Fprintf(&b, "  %s: %q\n", key, spec.params[key])
+		}
 	}
 	if len(spec.deps) > 0 {
 		b.WriteString("depends_on:\n")

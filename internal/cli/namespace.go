@@ -283,10 +283,16 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 		return rc.listTargets(cmd, att)
 	}
 	if len(rest) > 2 {
+		if len(rest) == 3 && rest[2] == "help" {
+			return rc.showTargetHelp(cmd, att, rest[1])
+		}
 		return fmt.Errorf("too many arguments: %s", strings.Join(rest, " "))
 	}
 	if rest[1] == "list" {
 		return rc.listTargets(cmd, att)
+	}
+	if rest[1] == "help" {
+		return rc.showTypeHelp(cmd, att)
 	}
 
 	t, err := rc.typeFor(att)
@@ -312,7 +318,9 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 //	smith <ns> list            list projects
 //	smith <ns> <name>          TARGET WINS: run <name> on every project in the ns
 //	smith <ns> <name> list     list that project's targets
+//	smith <ns> <name> help     type help (help/project.md + vars/env summary)
 //	smith <ns> <name> <target> run target on that project
+//	smith <ns> <name> <target> help  target help (help/<target>.md + rendered steps)
 //	smith <ns> <target>        run target on every project in the ns that declares it
 func (rc *repoContext) dispatchNamespace(cmd *cobra.Command, ns string, rest []string) error {
 	out := stdout(cmd)
@@ -342,6 +350,13 @@ func (rc *repoContext) dispatchNamespace(cmd *cobra.Command, ns string, rest []s
 	}
 
 	if len(rest) > 2 {
+		if len(rest) == 3 && rest[2] == "help" {
+			if !isProject {
+				return unknownProjectError(ns, name, nsProjects)
+			}
+			p, _ := projectByName(nsProjects, name)
+			return rc.showTargetHelp(cmd, p, rest[1])
+		}
 		return fmt.Errorf("too many arguments: %s", strings.Join(rest, " "))
 	}
 
@@ -351,6 +366,16 @@ func (rc *repoContext) dispatchNamespace(cmd *cobra.Command, ns string, rest []s
 		}
 		p, _ := projectByName(nsProjects, name)
 		return rc.listTargets(cmd, p)
+	}
+
+	if rest[1] == "help" {
+		// `help` is reserved: it shadows a target (or project) literally
+		// named "help".
+		if !isProject {
+			return unknownProjectError(ns, name, nsProjects)
+		}
+		p, _ := projectByName(nsProjects, name)
+		return rc.showTypeHelp(cmd, p)
 	}
 
 	if !isProject {
