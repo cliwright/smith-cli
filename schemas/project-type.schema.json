@@ -55,14 +55,33 @@
       "default": "project"
     },
     "targets": {
-      "description": "Named targets, each a list of shell command steps run in order; the first non-zero exit fails the target.",
+      "description": "Named targets, each run as an ordered list of shell command steps (the first non-zero exit fails the target). Each target is either a bare steps array, or an object with the steps plus an optional short description (~80 chars) shown in target listings.",
       "type": "object",
       "minProperties": 1,
       "patternProperties": {
         "^[a-z][a-z0-9-]*$": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "string", "minLength": 1 }
+          "oneOf": [
+            {
+              "description": "Bare form: just the steps.",
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            {
+              "description": "Described form: steps plus a short description for list views.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["steps"],
+              "properties": {
+                "description": { "type": "string", "maxLength": 80 },
+                "steps": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          ]
         }
       },
       "additionalProperties": false

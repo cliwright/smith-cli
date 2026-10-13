@@ -44,7 +44,7 @@ func buildDotenvPlan(t *testing.T, repo string, projectDotenv bool, typeEnv, man
 		Description: "x",
 		Tools:       []string{"sh"},
 		Environment: typeEnv,
-		Targets:     map[string][]string{"build": {"echo ok"}},
+		Targets:     map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 		WorkingDir:  projecttype.WorkingDirRepo,
 	}
 	typeFor := func(discovery.Project) (*projecttype.ProjectType, error) { return typ, nil }

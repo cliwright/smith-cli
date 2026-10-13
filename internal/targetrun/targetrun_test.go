@@ -54,13 +54,26 @@ func mkProjectFull(dir, name, typ string, params, env map[string]string, deps ..
 }
 
 func mkType(targets map[string][]string, deps map[string][]string, wd projecttype.WorkingDir) *projecttype.ProjectType {
+	typed := make(map[string]projecttype.Target, len(targets))
+	for name, steps := range targets {
+		typed[name] = projecttype.Target{Steps: steps}
+	}
 	return &projecttype.ProjectType{
 		Name:       "mock/lib",
 		Version:    1,
-		Targets:    targets,
+		Targets:    typed,
 		DependsOn:  deps,
 		WorkingDir: wd,
 	}
+}
+
+// typedTargets adapts a bare step-list fixture to typed targets.
+func typedTargets(steps map[string][]string) map[string]projecttype.Target {
+	out := make(map[string]projecttype.Target, len(steps))
+	for name, ss := range steps {
+		out[name] = projecttype.Target{Steps: ss}
+	}
+	return out
 }
 
 func stepsOf(runs []recordedRun) []string {
@@ -300,7 +313,7 @@ func TestBuildRejectsUndeclaredManifestParam(t *testing.T) {
 		"alpha": {
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
-			Targets:    map[string][]string{"build": {"echo ok"}},
+			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
@@ -322,7 +335,7 @@ func TestExecuteRendersStepsWithOverrides(t *testing.T) {
 		return &projecttype.ProjectType{
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"greeting": {Default: "hello"}},
-			Targets:    map[string][]string{"build": {`echo '{{.greeting}} world'`}},
+			Targets:    map[string]projecttype.Target{"build": {Steps: []string{`echo '{{.greeting}} world'`}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		}
 	}
@@ -378,7 +391,7 @@ func TestExecuteEnvPrecedence(t *testing.T) {
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:      map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
 			Environment: map[string]string{"MOCK_LEVEL": "type", "TEMPLATE_VAR": "cfg={{.config_path}}"},
-			Targets:     map[string][]string{"build": {"echo ok"}},
+			Targets:     typedTargets(map[string][]string{"build": {"echo ok"}}),
 			WorkingDir:  projecttype.WorkingDirProject,
 		},
 	}
@@ -430,9 +443,9 @@ func TestExecuteRealShellEnv(t *testing.T) {
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:      map[string]projecttype.Param{"suffix": {Default: "ok"}},
 			Environment: map[string]string{"EXTRA": "type-layer", "TEMPLATED": "cfg-{{.suffix}}"},
-			Targets: map[string][]string{
+			Targets: typedTargets(map[string][]string{
 				"build": {fmt.Sprintf(`echo "$SMITH_PROJECT:$SMITH_TARGET:$EXTRA:$TEMPLATED" >> %s`, markers)},
-			},
+			}),
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
@@ -469,7 +482,7 @@ func TestExecuteParamValueUsesComputedVars(t *testing.T) {
 		"alpha": {
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
-			Targets:    map[string][]string{"build": {`cat '{{.config_path}}'`}, "info": {`echo {{.SMITH_PROJECT_DIR}}`}},
+			Targets:    typedTargets(map[string][]string{"build": {`cat '{{.config_path}}'`}, "info": {`echo {{.SMITH_PROJECT_DIR}}`}}),
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
@@ -500,7 +513,7 @@ func TestExecuteEnvUsesParamsAndComputedVars(t *testing.T) {
 		"alpha": {
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
-			Targets:    map[string][]string{"build": {"echo ok"}},
+			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
@@ -532,7 +545,7 @@ func TestBuildPhaseARejectsParamReferencingParam(t *testing.T) {
 				"config_path": {Default: "pyproject.toml"},
 				"base_dir":    {Default: "."},
 			},
-			Targets:    map[string][]string{"build": {"echo ok"}},
+			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
@@ -554,7 +567,7 @@ func TestBuildPhaseARejectsUnknownVar(t *testing.T) {
 		"alpha": {
 			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
-			Targets:    map[string][]string{"build": {"echo ok"}},
+			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
@@ -583,7 +596,7 @@ func TestAttachmentClosureAndComputedVars(t *testing.T) {
 		"python": {
 			Name: "repo/uv/workspace", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"extras": {Default: "dev"}},
-			Targets:    map[string][]string{"setup": {"echo setup {{.extras}} {{.SMITH_PROJECT}} {{.SMITH_PROJECT_DIR}}"}, "fetch": {"echo fetch"}},
+			Targets:    typedTargets(map[string][]string{"setup": {"echo setup {{.extras}} {{.SMITH_PROJECT}} {{.SMITH_PROJECT_DIR}}"}, "fetch": {"echo fetch"}}),
 			DependsOn:  map[string][]string{"setup": {"fetch"}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
@@ -628,11 +641,11 @@ func TestAttachmentRealShell(t *testing.T) {
 		"python": {
 			Name: "repo/uv/workspace", Version: 1, Description: "x", Tools: []string{"sh"},
 			Environment: map[string]string{"LAYER": "type"},
-			Targets: map[string][]string{
+			Targets: typedTargets(map[string][]string{
 				// SMITH_PROJECT_DIR is template-only (not an env var), so it
 				// is rendered into the command; LAYER comes from the env.
 				"setup": {fmt.Sprintf(`echo "$SMITH_PROJECT|{{.SMITH_PROJECT_DIR}}|$LAYER" >> %s`, markers)},
-			},
+			}),
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}

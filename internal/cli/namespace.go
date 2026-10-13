@@ -361,7 +361,9 @@ func unknownProjectError(ns, name string, nsProjects []discovery.Project) error 
 		name, ns, strings.Join(projectNames(nsProjects), ", "))
 }
 
-// listTargets prints the target names a project's type declares.
+// listTargets prints the target names a project's type declares, annotated
+// with each target's short description when it carries one: names are padded
+// to a common column and described targets read "name -- description".
 func (rc *repoContext) listTargets(cmd *cobra.Command, p discovery.Project) error {
 	t, err := rc.typeFor(p)
 	if err != nil {
@@ -372,9 +374,19 @@ func (rc *repoContext) listTargets(cmd *cobra.Command, p discovery.Project) erro
 		targets = append(targets, name)
 	}
 	sort.Strings(targets)
+	width := 0
+	for _, name := range targets {
+		if t.Targets[name].Description != "" && len(name) > width {
+			width = len(name)
+		}
+	}
 	out := stdout(cmd)
 	for _, name := range targets {
-		fmt.Fprintln(out, name)
+		if desc := t.Targets[name].Description; desc != "" {
+			fmt.Fprintf(out, "%-*s -- %s\n", width, name, desc)
+		} else {
+			fmt.Fprintln(out, name)
+		}
 	}
 	return nil
 }
@@ -471,7 +483,7 @@ func warnParallel(cmd *cobra.Command) {
 	}
 }
 
-func sortedKeys(m map[string][]string) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

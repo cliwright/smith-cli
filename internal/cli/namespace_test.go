@@ -55,6 +55,7 @@ type manifestSpec struct {
 
 type typeSpec struct {
 	targets map[string][]string
+	descs   map[string]string // short descriptions per target name (optional)
 	deps    map[string][]string
 	wd      projecttype.WorkingDir
 	tools   []string
@@ -112,7 +113,7 @@ func writeDispatchRepo(t *testing.T, repo string, manifests map[string]manifestS
 			Description: "test type",
 			Tools:       tools,
 			WorkingDir:  ts.wd,
-			Targets:     ts.targets,
+			Targets:     targetsFromSteps(ts.targets, ts.descs),
 			DependsOn:   ts.deps,
 			Environment: ts.env,
 		}
@@ -185,6 +186,16 @@ func typeSpecPtr(overrides map[string]typeSpec, ref string) *typeSpec {
 		return &ts
 	}
 	return nil
+}
+
+// targetsFromSteps adapts the fixture's bare step lists to typed targets,
+// attaching the optional per-target short descriptions.
+func targetsFromSteps(steps map[string][]string, descs map[string]string) map[string]projecttype.Target {
+	out := make(map[string]projecttype.Target, len(steps))
+	for name, ss := range steps {
+		out[name] = projecttype.Target{Steps: ss, Description: descs[name]}
+	}
+	return out
 }
 
 func renderManifest(spec manifestSpec) string {
@@ -651,5 +662,36 @@ func TestRepoReservedNamespaceShadowsRoot(t *testing.T) {
 	}
 	if out != "python\n" {
 		t.Errorf("output = %q, want attachments (synthetic namespace wins)", out)
+	}
+}
+
+func TestNsListTargetsAnnotatedWithDescriptions(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{
+				"build": {"echo build"},
+				"lint":  {"echo lint"},
+				"clean": {"echo clean"},
+			},
+			descs: map[string]string{
+				"build": "build the wheel",
+				"lint":  "run the ruff linter",
+			},
+		},
+	})
+	t.Chdir(repo)
+
+	out, err := run(t, "libs", "alpha", "list")
+	if err != nil {
+		t.Fatalf("libs alpha list: %v\noutput:\n%s", err, out)
+	}
+	// Described targets pad to a common column and carry " -- description";
+	// bare targets stay single-column.
+	want := "build -- build the wheel\nclean\nlint  -- run the ruff linter\n"
+	if out != want {
+		t.Errorf("listing = %q, want %q", out, want)
 	}
 }

@@ -249,7 +249,10 @@ func showTypeDetail(out io.Writer, installed []installedType, arg string, status
 	fmt.Fprintln(out, "  targets:")
 	for _, target := range sortedKeys(pt.Targets) {
 		fmt.Fprintf(out, "    %s:\n", target)
-		for _, step := range pt.Targets[target] {
+		if pt.Targets[target].Description != "" {
+			fmt.Fprintf(out, "      description: %s\n", pt.Targets[target].Description)
+		}
+		for _, step := range pt.Targets[target].Steps {
 			fmt.Fprintf(out, "      %s\n", step)
 		}
 	}

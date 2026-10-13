@@ -397,7 +397,7 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 		}
 
 		var steps []string
-		for _, step := range t.Targets[n.Target] {
+		for _, step := range t.Targets[n.Target].Steps {
 			rendered, err := projecttype.RenderTemplate(step, context)
 			if err != nil {
 				return fmt.Errorf("%s: rendering step: %w", n, err)

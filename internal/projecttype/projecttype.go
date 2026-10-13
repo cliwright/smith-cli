@@ -16,18 +16,62 @@ import (
 
 // ProjectType is the typed view of project-type.json.
 type ProjectType struct {
-	Name         string              `json:"name" yaml:"name"`
-	Version      int                 `json:"version" yaml:"version"`
-	Description  string              `json:"description" yaml:"description"`
-	Capabilities []Capability        `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	Tools        []string            `json:"tools" yaml:"tools"`
-	WorkingDir   WorkingDir          `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
-	Targets      map[string][]string `json:"targets" yaml:"targets"`
+	Name         string            `json:"name" yaml:"name"`
+	Version      int               `json:"version" yaml:"version"`
+	Description  string            `json:"description" yaml:"description"`
+	Capabilities []Capability      `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Tools        []string          `json:"tools" yaml:"tools"`
+	WorkingDir   WorkingDir        `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
+	Targets      map[string]Target `json:"targets" yaml:"targets"`
 	DependsOn    map[string][]string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 	// Params this type declares; steps and environment values are Go
 	// templates over the merged params ({{.name}}).
 	Params      map[string]Param  `json:"params,omitempty" yaml:"params,omitempty"`
 	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
+}
+
+// Target is one named target of a project type: the ordered shell steps that
+// run for it, plus an optional short description for list views. In
+// project-type.json a target is either a bare steps array (the common case)
+// or an object {"description": ..., "steps": [...]}; both decode into this
+// type, and MarshalJSON writes the bare form back when there is no
+// description, keeping hand-written types slim.
+type Target struct {
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Steps       []string `json:"steps" yaml:"steps"`
+}
+
+// UnmarshalJSON accepts both target forms: a bare array of steps, or an
+// object with description and steps.
+func (t *Target) UnmarshalJSON(data []byte) error {
+	var bare []string
+	if err := json.Unmarshal(data, &bare); err == nil {
+		t.Steps = bare
+		t.Description = ""
+		return nil
+	}
+	var described struct {
+		Description string   `json:"description"`
+		Steps       []string `json:"steps"`
+	}
+	if err := json.Unmarshal(data, &described); err != nil {
+		return fmt.Errorf("target must be a steps array or an object with description/steps: %w", err)
+	}
+	t.Description = described.Description
+	t.Steps = described.Steps
+	return nil
+}
+
+// MarshalJSON writes the bare steps array when the target carries no
+// description, and the described object otherwise.
+func (t Target) MarshalJSON() ([]byte, error) {
+	if t.Description == "" {
+		return json.Marshal(t.Steps)
+	}
+	return json.Marshal(struct {
+		Description string   `json:"description,omitempty"`
+		Steps       []string `json:"steps"`
+	}{t.Description, t.Steps})
 }
 
 // Param is one declared type param: a required default and an optional
@@ -132,8 +176,8 @@ func (pt *ProjectType) validateTemplates() error {
 	for key, value := range dryRenderComputedVars {
 		context[key] = value
 	}
-	for name, steps := range pt.Targets {
-		for i, step := range steps {
+	for name, target := range pt.Targets {
+		for i, step := range target.Steps {
 			if _, err := RenderTemplate(step, context); err != nil {
 				return fmt.Errorf("type %s@%d: target %q step %d: %w", pt.Name, pt.Version, name, i+1, err)
 			}

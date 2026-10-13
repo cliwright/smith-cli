@@ -41,7 +41,7 @@ func TestLoad(t *testing.T) {
 				if pt.WorkingDir != WorkingDirProject {
 					t.Errorf("WorkingDir = %q, want %q", pt.WorkingDir, WorkingDirProject)
 				}
-				if !slices.Equal(pt.Targets["test"], []string{"uv run pytest -c '{{.config_path}}'"}) {
+				if !slices.Equal(pt.Targets["test"].Steps, []string{"uv run pytest -c '{{.config_path}}'"}) {
 					t.Errorf("Targets[test] = %v", pt.Targets["test"])
 				}
 				if !slices.Equal(pt.DependsOn["build"], []string{"lint", "test"}) {
@@ -123,6 +123,21 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			name: "environment value must be a string",
 			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":["echo x"]},"environment":{"DEBUG":3}}`,
 			want: "environment",
+		},
+		{
+			name: "described target without steps",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":{"description":"no steps here"}}}`,
+			want: "steps",
+		},
+		{
+			name: "described target with unknown key",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":{"description":"x","steps":["go build"],"also":"no"}}}`,
+			want: "oneOf",
+		},
+		{
+			name: "description over 80 chars",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":{"description":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","steps":["go build"]}}}`,
+			want: "description",
 		},
 	}
 	for _, tt := range tests {
@@ -253,5 +268,73 @@ func TestRenderTemplate(t *testing.T) {
 	if _, err := RenderTemplate(`{{.missing}}`, map[string]string{}); err == nil ||
 		!strings.Contains(err.Error(), "missing") {
 		t.Errorf("RenderTemplate missing-key error = %v", err)
+	}
+}
+
+// TestLoadDualFormTargets: a target may be a bare steps array or an object
+// with description + steps; both decode into the typed Target.
+func TestLoadDualFormTargets(t *testing.T) {
+	doc := `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],
+		"targets":{
+			"build":  {"description": "compile the packages", "steps": ["go build ./..."]},
+			"clean":  ["go clean"]}}`
+	path := filepath.Join(t.TempDir(), "project-type.json")
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pt, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if pt.Targets["build"].Description != "compile the packages" ||
+		!slices.Equal(pt.Targets["build"].Steps, []string{"go build ./..."}) {
+		t.Errorf("described target = %+v", pt.Targets["build"])
+	}
+	if pt.Targets["clean"].Description != "" ||
+		!slices.Equal(pt.Targets["clean"].Steps, []string{"go clean"}) {
+		t.Errorf("bare target = %+v", pt.Targets["clean"])
+	}
+}
+
+// TestMarshalTargetForms: steps-only targets write back as the bare array
+// (types stay slim), described targets as the object.
+func TestMarshalTargetForms(t *testing.T) {
+	pt := &ProjectType{
+		Name: "go/std/lib", Version: 1, Description: "x", Tools: []string{"go"},
+		Targets: map[string]Target{
+			"build": {Description: "compile", Steps: []string{"go build ./..."}},
+			"clean": {Steps: []string{"go clean"}},
+		},
+	}
+	data, err := Marshal(pt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"build": {
+      "description": "compile",
+      "steps": [
+        "go build ./..."
+      ]
+    }`) {
+		t.Errorf("described target did not marshal as an object:\n%s", data)
+	}
+	if !strings.Contains(string(data), `"clean": [
+      "go clean"
+    ]`) {
+		t.Errorf("steps-only target did not marshal as a bare array:\n%s", data)
+	}
+
+	// The marshalled document must load back identically.
+	path := filepath.Join(t.TempDir(), "project-type.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("reloading marshalled type: %v", err)
+	}
+	if reloaded.Targets["build"].Description != "compile" ||
+		!slices.Equal(reloaded.Targets["clean"].Steps, []string{"go clean"}) {
+		t.Errorf("round trip = %+v", reloaded.Targets)
 	}
 }

@@ -42,11 +42,11 @@ func libTypeV1() *projecttype.ProjectType {
 			"config_path": {Default: "pyproject.toml", Description: "ruff/pytest config location"},
 		},
 		Environment: map[string]string{"PYTHONUNBUFFERED": "1"},
-		Targets: map[string][]string{
+		Targets: targetsFromSteps(map[string][]string{
 			"lint":  {"uv run ruff check --config '{{.config_path}}' ."},
 			"test":  {"uv run pytest -c '{{.config_path}}'"},
 			"build": {"uv build"},
-		},
+		}, nil),
 		DependsOn: map[string][]string{"build": {"lint", "test"}},
 	}
 }
@@ -65,7 +65,10 @@ func workspaceType() *projecttype.ProjectType {
 		Description: "uv workspace root environment",
 		Tools:       []string{"uv"},
 		WorkingDir:  projecttype.WorkingDirProject,
-		Targets:     map[string][]string{"setup": {"uv venv", "uv sync --extra dev"}, "clean": {"rm -rf .venv"}},
+		Targets: targetsFromSteps(map[string][]string{
+			"setup": {"uv venv", "uv sync --extra dev"},
+			"clean": {"rm -rf .venv"},
+		}, nil),
 	}
 }
 
@@ -292,5 +295,21 @@ func TestTypesBadNameArg(t *testing.T) {
 	_, err := run(t, "types", "foo")
 	if err == nil || !strings.Contains(err.Error(), "want <language>/<flavor>/<kind>") {
 		t.Fatalf("error = %v, want the grammar error", err)
+	}
+}
+
+func TestTypesDetailShowsTargetDescription(t *testing.T) {
+	repo := typesRepo(t)
+	pt := libTypeV1()
+	pt.Targets["build"] = projecttype.Target{Description: "build the wheel", Steps: []string{"uv build"}}
+	installTestType(t, repo, pt)
+	t.Chdir(repo)
+
+	out, err := run(t, "types", "python/astral/lib@1")
+	if err != nil {
+		t.Fatalf("types: %v", err)
+	}
+	if !strings.Contains(out, "    build:\n      description: build the wheel\n      uv build\n") {
+		t.Errorf("detail missing the target description line:\n%s", out)
 	}
 }
