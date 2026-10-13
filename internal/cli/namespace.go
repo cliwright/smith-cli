@@ -13,6 +13,7 @@ import (
 
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/manifest"
 	"github.com/cliwright/smith/internal/projecttype"
@@ -112,8 +113,9 @@ func (rc *repoContext) lock() (*lock.Lock, error) {
 }
 
 // typeFor returns the project type of a discovered project, verifying the
-// installed copy against the lock before use. Missing, unpinned, or drifted
-// types are hard errors pointing at smith sync.
+// installed copy against the lock before use: the ingot must hash-match the
+// pin and the unpacked tree must match the ingot. Missing, unpinned, or
+// drifted types are hard errors pointing at smith sync.
 func (rc *repoContext) typeFor(p discovery.Project) (*projecttype.ProjectType, error) {
 	if t, ok := rc.types[p.Manifest.Name]; ok {
 		return t, nil
@@ -130,15 +132,14 @@ func (rc *repoContext) typeFor(p discovery.Project) (*projecttype.ProjectType, e
 	if !ok {
 		return nil, fmt.Errorf("type %s is not pinned in %s; run smith sync", ref, filepath.Join(cacheDirName, lockJSONName))
 	}
-	path := rc.installedPath(ref)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("installed type %s is missing (%s); run smith sync", ref, path)
+	dir := rc.installedPath(ref)
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("installed type %s is missing (%s); run smith sync", ref, dir)
 	}
-	if hashBytes(data) != pin.Hash {
-		return nil, fmt.Errorf("installed type %s failed hash verification; run smith sync", ref)
+	if err := ingot.VerifyInstalled(dir, pin.Hash); err != nil {
+		return nil, fmt.Errorf("type %s: %w", ref, err)
 	}
-	pt, err := projecttype.Load(path)
+	pt, err := projecttype.Load(filepath.Join(dir, "project-type.json"))
 	if err != nil {
 		return nil, fmt.Errorf("installed type %s: %w", ref, err)
 	}
@@ -154,10 +155,16 @@ func typesDir(repoRoot string) string {
 	return filepath.Join(repoRoot, cacheDirName, "types")
 }
 
-// installedPath resolves the repo-local installed copy of ref under
-// .smith/types.
+// installedPath resolves the repo-local installed directory of ref under
+// .smith/types (<name>@v<N>).
 func (rc *repoContext) installedPath(ref typeref.TypeRef) string {
-	return filepath.Join(typesDir(rc.repoRoot), installRelPath(ref))
+	return filepath.Join(typesDir(rc.repoRoot), installRelDir(ref))
+}
+
+// typeDirFor returns the installed directory of a resolved type — the
+// SMITH_TYPE_DIR anchor for the projects on that type.
+func (rc *repoContext) typeDirFor(t *projecttype.ProjectType) string {
+	return rc.installedPath(typeref.TypeRef{Name: t.Name, Version: t.Version})
 }
 
 // namespaces are the first path segments of the declared project_roots.
@@ -292,7 +299,7 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	}
 	warnParallel(cmd)
 	plan, err := targetrun.Build([]discovery.Project{att}, rc.typeFor,
-		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot)
+		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot, typesDir(rc.repoRoot))
 	if err != nil {
 		return err
 	}
@@ -403,7 +410,7 @@ func (rc *repoContext) runSingle(cmd *cobra.Command, p discovery.Project, target
 			p.Manifest.Name, t.Name, t.Version, target, strings.Join(sortedKeys(t.Targets), ", "))
 	}
 	warnParallel(cmd)
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot, typesDir(rc.repoRoot))
 	if err != nil {
 		return err
 	}
@@ -440,7 +447,7 @@ func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []d
 		return fmt.Errorf("no project in %s has a %q target%s", scope, target, hint)
 	}
 
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, typesDir(rc.repoRoot))
 	if err != nil {
 		return err
 	}

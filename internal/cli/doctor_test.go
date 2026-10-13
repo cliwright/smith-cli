@@ -118,7 +118,7 @@ func TestDoctorUnloadableTypeIsAFinding(t *testing.T) {
 
 	// Tamper with alpha's installed type: custody check fails, but the
 	// doctor keeps checking the rest.
-	installPath := filepath.Join(repo, cacheDirName, "types", filepath.FromSlash("mock/std/lib@v1.json"))
+	installPath := filepath.Join(installedDir(t, repo, "mock/std/lib@v1"), "project-type.json")
 	if err := os.WriteFile(installPath, []byte(`{"name":"mock/lib"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

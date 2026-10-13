@@ -16,13 +16,13 @@ import (
 
 // ProjectType is the typed view of project-type.json.
 type ProjectType struct {
-	Name         string            `json:"name" yaml:"name"`
-	Version      int               `json:"version" yaml:"version"`
-	Description  string            `json:"description" yaml:"description"`
-	Capabilities []Capability      `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	Tools        []string          `json:"tools" yaml:"tools"`
-	WorkingDir   WorkingDir        `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
-	Targets      map[string]Target `json:"targets" yaml:"targets"`
+	Name         string              `json:"name" yaml:"name"`
+	Version      int                 `json:"version" yaml:"version"`
+	Description  string              `json:"description" yaml:"description"`
+	Capabilities []Capability        `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Tools        []string            `json:"tools" yaml:"tools"`
+	WorkingDir   WorkingDir          `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
+	Targets      map[string]Target   `json:"targets" yaml:"targets"`
 	DependsOn    map[string][]string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 	// Params this type declares; steps and environment values are Go
 	// templates over the merged params ({{.name}}).
@@ -166,6 +166,7 @@ var dryRenderComputedVars = map[string]string{
 	"SMITH_REPO_ROOT":   "<smith-repo-root>",
 	"SMITH_PROJECT":     "<smith-project>",
 	"SMITH_PROJECT_DIR": "<smith-project-dir>",
+	"SMITH_TYPE_DIR":    "<smith-type-dir>",
 }
 
 // validateTemplates dry-renders every step and environment value against the

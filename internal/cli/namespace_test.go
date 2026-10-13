@@ -24,6 +24,7 @@ import (
 type fakeExec struct {
 	runs   []string
 	dirs   []string
+	envs   [][]string
 	failOn string
 }
 
@@ -33,6 +34,7 @@ func (f *fakeExec) Run(_ context.Context, opts runner.Options, _ string, args ..
 	step := args[1]
 	f.runs = append(f.runs, step)
 	f.dirs = append(f.dirs, opts.Dir)
+	f.envs = append(f.envs, opts.Env)
 	if step == f.failOn {
 		return errors.New("exited with status 7")
 	}
@@ -121,14 +123,8 @@ func writeDispatchRepo(t *testing.T, repo string, manifests map[string]manifestS
 		if err != nil {
 			t.Fatal(err)
 		}
-		installPath := filepath.Join(repo, cacheDirName, "types", installRelPath(ref))
-		if err := os.MkdirAll(filepath.Dir(installPath), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(installPath, data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		pins[ref.String()] = lock.TypePin{Registry: "cliwright", Hash: hashBytes(data)}
+		hash := installIngotForTest(t, repo, ref, map[string]string{"project-type.json": string(data)})
+		pins[ref.String()] = lock.TypePin{Registry: "cliwright", Hash: hash}
 	}
 	for dir, spec := range manifests {
 		full := filepath.Join(repo, filepath.FromSlash(dir))
@@ -425,21 +421,49 @@ func TestNsParallelWarning(t *testing.T) {
 	}
 }
 
+// TestNsStepRendersAndExportsSmithTypeDir: steps template {{.SMITH_TYPE_DIR}}
+// against the installed type directory, and the same path is exported to the
+// step environment for shell-side use.
+func TestNsStepRendersAndExportsSmithTypeDir(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo,
+		map[string]manifestSpec{"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"}},
+		map[string]typeSpec{"mock/std/lib@1": {
+			targets: map[string][]string{"build": {`echo {{.SMITH_TYPE_DIR}}`}},
+		}},
+	)
+	t.Chdir(repo)
+
+	f := &fakeExec{}
+	useFakeExec(t, f)
+	if _, err := run(t, "libs", "alpha", "build"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	wantDir := filepath.Join(repo, ".smith", "types", "mock", "std", "lib@v1")
+	if !slices.Equal(f.runs, []string{"echo " + wantDir}) {
+		t.Errorf("runs = %v, want the step rendered with SMITH_TYPE_DIR", f.runs)
+	}
+	if len(f.envs) != 1 || !slices.Contains(f.envs[0], "SMITH_TYPE_DIR="+wantDir) {
+		t.Errorf("step env missing SMITH_TYPE_DIR export: %v", f.envs)
+	}
+}
+
 func TestNsLockMismatchIsHardError(t *testing.T) {
 	repo := t.TempDir()
 	twoLibsFixture(t, repo)
 	t.Chdir(repo)
 
-	// Tamper with the installed type after the lock was written.
-	installPath := filepath.Join(repo, cacheDirName, "types", filepath.FromSlash("mock/std/lib@v1.json"))
+	// Tamper with the unpacked tree after the lock was written: the tree
+	// drifts from the ingot, which is a hard error pointing at smith sync.
+	installPath := filepath.Join(installedDir(t, repo, "mock/std/lib@v1"), "project-type.json")
 	if err := os.WriteFile(installPath, []byte(`{"name":"mock/lib"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := run(t, "libs", "alpha", "test")
-	if err == nil || !strings.Contains(err.Error(), "failed hash verification") ||
+	if err == nil || !strings.Contains(err.Error(), "drifted from the ingot") ||
 		!strings.Contains(err.Error(), "smith sync") {
-		t.Fatalf("error = %v, want hash-verification hard error", err)
+		t.Fatalf("error = %v, want custody hard error", err)
 	}
 }
 

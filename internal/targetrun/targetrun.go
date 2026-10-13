@@ -17,6 +17,7 @@ import (
 
 	"github.com/cliwright/smith/internal/discovery"
 	"github.com/cliwright/smith/internal/dotenv"
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/runner"
 )
@@ -54,6 +55,7 @@ type Plan struct {
 	dirs     map[string]string                   // project name → absolute project dir
 	projects map[string]discovery.Project        // by project name
 	params   map[string]map[string]string        // project name → merged params
+	typeDirs map[string]string                   // project name → installed type dir
 
 	// Dotenv configuration, set by the caller before PrepareDotenv and
 	// Execute. RepoDotenv mirrors the dotenv: key of .smith/repo.yml;
@@ -71,18 +73,22 @@ func (p *Plan) Order() []Node { return p.order }
 
 // ReservedTemplateVars are the smith-computed template variables available
 // in the rendering pipeline: uppercase keys, collision-free with params by
-// construction (the param key pattern is lowercase-only). SMITH_TARGET and
-// SMITH_ENV are deliberately NOT here — they are subprocess-env-only runtime
-// selectors, since manifests and params are neither target- nor run-scoped.
-var ReservedTemplateVars = []string{"SMITH_REPO_ROOT", "SMITH_PROJECT", "SMITH_PROJECT_DIR"}
+// construction (the param key pattern is lowercase-only). SMITH_TARGET,
+// SMITH_ENV, and SMITH_PAGER are deliberately NOT here — they are
+// subprocess-env-only runtime selectors, since manifests and params are
+// neither target- nor run-scoped.
+var ReservedTemplateVars = []string{"SMITH_REPO_ROOT", "SMITH_PROJECT", "SMITH_PROJECT_DIR", "SMITH_TYPE_DIR"}
 
 // ComputedVars builds the reserved template context for one project. dir is
-// the project directory relative to the (absolute) repo root.
-func ComputedVars(absRoot, dir, project string) map[string]string {
+// the project directory relative to the (absolute) repo root; typeDir is
+// the absolute installed directory of the project's type (.smith/types
+// <name>@v<N>), the anchor for type-shipped scripts and help.
+func ComputedVars(absRoot, dir, project, typeDir string) map[string]string {
 	return map[string]string{
 		"SMITH_REPO_ROOT":   absRoot,
 		"SMITH_PROJECT":     project,
 		"SMITH_PROJECT_DIR": filepath.Join(absRoot, filepath.FromSlash(dir)),
+		"SMITH_TYPE_DIR":    typeDir,
 	}
 }
 
@@ -109,9 +115,10 @@ func phaseAError(p discovery.Project, t *projecttype.ProjectType, key string, er
 // project. Phase A (strict): manifest param values render against the
 // computed vars ONLY — a value referencing another param is a hard error
 // naming project, key, and type. A manifest param the type does not declare
-// is likewise a hard error. Exported for the --context view, which resolves
-// a single project without building a graph.
-func ResolveParams(absRoot string, p discovery.Project, t *projecttype.ProjectType) (map[string]string, error) {
+// is likewise a hard error. typeDir is the installed directory of the
+// project's type, bound as SMITH_TYPE_DIR. Exported for the --context view,
+// which resolves a single project without building a graph.
+func ResolveParams(absRoot, typeDir string, p discovery.Project, t *projecttype.ProjectType) (map[string]string, error) {
 	merged := t.Defaults()
 	keys := make([]string, 0, len(p.Manifest.Params))
 	for key := range p.Manifest.Params {
@@ -122,7 +129,7 @@ func ResolveParams(absRoot string, p discovery.Project, t *projecttype.ProjectTy
 		if _, declared := t.Params[key]; !declared {
 			return nil, fmt.Errorf("project %q (type %s@%d) sets param %q, which the type does not declare", p.Manifest.Name, t.Name, t.Version, key)
 		}
-		rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], ComputedVars(absRoot, p.Dir, p.Manifest.Name))
+		rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], ComputedVars(absRoot, p.Dir, p.Manifest.Name, typeDir))
 		if err != nil {
 			return nil, phaseAError(p, t, key, err)
 		}
@@ -136,11 +143,16 @@ func ResolveParams(absRoot string, p discovery.Project, t *projecttype.ProjectTy
 // its project's type — a dangling target, including one named by a manifest
 // depends_on entry, is a hard error naming project, target, and type.
 // repoRoot scopes the reserved template vars (SMITH_REPO_ROOT, SMITH_PROJECT,
-// SMITH_PROJECT_DIR).
-func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot string) (*Plan, error) {
+// SMITH_PROJECT_DIR); typesRoot is the installed-types directory
+// (.smith/types), from which SMITH_TYPE_DIR is derived per project.
+func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot, typesRoot string) (*Plan, error) {
 	absRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repo root: %w", err)
+	}
+	absTypesRoot, err := filepath.Abs(typesRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolving types root: %w", err)
 	}
 
 	byName := make(map[string]discovery.Project, len(projects))
@@ -150,11 +162,12 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot
 
 	types := map[string]*projecttype.ProjectType{}
 	params := map[string]map[string]string{}
+	typeDirs := map[string]string{}
 
 	// resolveParams merges type defaults with rendered manifest overrides;
 	// the work lives in the exported ResolveParams, shared with --context.
 	resolveParams := func(p discovery.Project, t *projecttype.ProjectType) (map[string]string, error) {
-		return ResolveParams(absRoot, p, t)
+		return ResolveParams(absRoot, typeDirs[p.Manifest.Name], p, t)
 	}
 
 	resolve := func(name string) (*projecttype.ProjectType, error) {
@@ -170,6 +183,7 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot
 			return nil, err
 		}
 		types[name] = t
+		typeDirs[name] = filepath.Join(absTypesRoot, ingot.RefName(t.Name, t.Version))
 		merged, err := resolveParams(p, t)
 		if err != nil {
 			return nil, err
@@ -220,6 +234,7 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot
 		dirs:     map[string]string{},
 		projects: byName,
 		params:   params,
+		typeDirs: typeDirs,
 	}
 	const (
 		white = iota // unvisited
@@ -364,9 +379,9 @@ func (p *Plan) PrepareDotenv(repoRoot string) error {
 // PrepareDotenv (repo dotenv/.env, repo dotenv/.<env>.env, project
 // dotenv/.env, project dotenv/.<env>.env); the type's environment; the
 // manifest's environment; then the computed SMITH_REPO_ROOT / SMITH_PROJECT /
-// SMITH_TARGET, plus SMITH_ENV when an environment is selected (appended
-// last, so nothing can shadow them). A header line per node is written to
-// out before its steps.
+// SMITH_TARGET / SMITH_TYPE_DIR, plus SMITH_ENV when an environment is
+// selected (appended last, so nothing can shadow them). A header line per
+// node is written to out before its steps.
 func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Writer) error {
 	absRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
@@ -388,11 +403,11 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 		// Phase B: steps and environment values render against the merged
 		// params PLUS the reserved computed vars (computed wins on the
 		// (impossible) collision, by construction).
-		context := make(map[string]string, len(params)+3)
+		context := make(map[string]string, len(params)+len(ReservedTemplateVars))
 		for key, value := range params {
 			context[key] = value
 		}
-		for key, value := range ComputedVars(absRoot, p.dirs[n.Project], n.Project) {
+		for key, value := range ComputedVars(absRoot, p.dirs[n.Project], n.Project, p.typeDirs[n.Project]) {
 			context[key] = value
 		}
 
@@ -428,7 +443,8 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 // rendered type environment, then the rendered manifest environment, then the
 // computed SMITH_* variables (appended last so they win), plus SMITH_ENV when
 // an environment is selected. SMITH_PROJECT_DIR is template-only and
-// deliberately NOT exported here.
+// deliberately NOT exported here; SMITH_TYPE_DIR IS — a step shells out to
+// $SMITH_TYPE_DIR/scripts/... and should not have to template it.
 func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, context map[string]string, absRoot string) ([]string, error) {
 	env := os.Environ()
 	env = append(env, p.dotenvRepo...)
@@ -460,6 +476,7 @@ func (p *Plan) stepEnv(n Node, t *projecttype.ProjectType, context map[string]st
 		"SMITH_REPO_ROOT="+absRoot,
 		"SMITH_PROJECT="+n.Project,
 		"SMITH_TARGET="+n.Target,
+		"SMITH_TYPE_DIR="+p.typeDirs[n.Project],
 	)
 	if p.SmithEnv != "" {
 		env = append(env, "SMITH_ENV="+p.SmithEnv)

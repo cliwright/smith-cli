@@ -2,14 +2,16 @@ package sync
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -50,15 +52,39 @@ func TestRawBase(t *testing.T) {
 	}
 }
 
-// serveType registers a type version and its sha256 sidecar on the mux.
-func serveType(mux *http.ServeMux, path, content string) {
-	mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, content)
+// packForTest builds an ingot holding the given slash-relative files.
+func packForTest(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := ingot.Pack(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// serveIngot registers an ingot and its sha256 sidecar at the registry path
+// <name>/v<N>/<flat-ingot-name>.
+func serveIngot(t *testing.T, mux *http.ServeMux, name string, version int, ingotBytes []byte) string {
+	t.Helper()
+	base := fmt.Sprintf("/%s/v%d/%s", name, version, ingot.FileName(name, version))
+	mux.HandleFunc(base, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(ingotBytes)
 	})
-	sum := sha256.Sum256([]byte(content))
-	mux.HandleFunc(path+".sha256", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, "%x  project-type.json\n", sum[:])
+	sidecar := fmt.Sprintf("%s  %s\n", strings.TrimPrefix(ingot.Hash(ingotBytes), "sha256:"), ingot.FileName(name, version))
+	mux.HandleFunc(base+".sha256", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, sidecar)
 	})
+	return base
 }
 
 func mustRef(t *testing.T, s string) typeref.TypeRef {
@@ -72,10 +98,11 @@ func mustRef(t *testing.T, s string) typeref.TypeRef {
 
 func TestFetch(t *testing.T) {
 	const content = `{"name":"python/astral/lib","version":1,"description":"x","tools":["python"],"targets":{"build":["true"]}}`
+	ingotBytes := packForTest(t, map[string]string{"project-type.json": content})
 
 	t.Run("happy path", func(t *testing.T) {
 		mux := http.NewServeMux()
-		serveType(mux, "/python/astral/lib/v1/project-type.json", content)
+		serveIngot(t, mux, "python/astral/lib", 1, ingotBytes)
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
 
@@ -83,11 +110,10 @@ func TestFetch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
-		if string(ft.Content) != content {
-			t.Errorf("Content = %q", ft.Content)
+		if string(ft.Content) != string(ingotBytes) {
+			t.Errorf("Content = %d bytes, want the %d-byte ingot", len(ft.Content), len(ingotBytes))
 		}
-		sum := sha256.Sum256([]byte(content))
-		if want := fmt.Sprintf("sha256:%x", sum[:]); ft.Hash != want {
+		if want := ingot.Hash(ingotBytes); ft.Hash != want {
 			t.Errorf("Hash = %q, want %q", ft.Hash, want)
 		}
 	})
@@ -103,12 +129,13 @@ func TestFetch(t *testing.T) {
 	})
 
 	t.Run("sidecar drift is a hard error", func(t *testing.T) {
+		base := fmt.Sprintf("/python/astral/lib/v1/%s", ingot.FileName("python/astral/lib", 1))
 		mux := http.NewServeMux()
-		mux.HandleFunc("/python/astral/lib/v1/project-type.json", func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, content)
+		mux.HandleFunc(base, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(ingotBytes)
 		})
-		mux.HandleFunc("/python/astral/lib/v1/project-type.json.sha256", func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, "0000000000000000000000000000000000000000000000000000000000000000  project-type.json\n")
+		mux.HandleFunc(base+".sha256", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, "0000000000000000000000000000000000000000000000000000000000000000  %s\n", ingot.FileName("python/astral/lib", 1))
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
@@ -120,11 +147,12 @@ func TestFetch(t *testing.T) {
 	})
 
 	t.Run("malformed sidecar", func(t *testing.T) {
+		base := fmt.Sprintf("/python/astral/lib/v1/%s", ingot.FileName("python/astral/lib", 1))
 		mux := http.NewServeMux()
-		mux.HandleFunc("/python/astral/lib/v1/project-type.json", func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, content)
+		mux.HandleFunc(base, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(ingotBytes)
 		})
-		mux.HandleFunc("/python/astral/lib/v1/project-type.json.sha256", func(w http.ResponseWriter, _ *http.Request) {
+		mux.HandleFunc(base+".sha256", func(w http.ResponseWriter, _ *http.Request) {
 			fmt.Fprint(w, "not-a-sidecar\n")
 		})
 		server := httptest.NewServer(mux)
@@ -138,7 +166,8 @@ func TestFetch(t *testing.T) {
 
 	t.Run("non-200 is an error", func(t *testing.T) {
 		mux := http.NewServeMux()
-		mux.HandleFunc("/python/astral/lib/v1/project-type.json", func(w http.ResponseWriter, _ *http.Request) {
+		base := fmt.Sprintf("/python/astral/lib/v1/%s", ingot.FileName("python/astral/lib", 1))
+		mux.HandleFunc(base, func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		})
 		server := httptest.NewServer(mux)

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/typeref"
@@ -48,8 +49,8 @@ environment, targets, and target depends_on.`,
 // installedType is one type found in the repo's .smith/types.
 type installedType struct {
 	ref  typeref.TypeRef
-	path string
-	data []byte
+	path string // the installed project-type.json
+	hash string // the installed ingot's hash, "" when the artifact is absent
 	pt   *projecttype.ProjectType
 }
 
@@ -93,7 +94,7 @@ func runTypes(cmd *cobra.Command, args []string) error {
 			filepath.Join(cacheDirName, lockJSONName), err)
 	}
 	status := func(it installedType) string {
-		return lockStatus(repoLock, it.ref, it.data)
+		return lockStatus(repoLock, it.ref, it.hash)
 	}
 
 	if len(args) == 0 {
@@ -114,9 +115,13 @@ func runTypes(cmd *cobra.Command, args []string) error {
 	return showTypeVersions(out, installed, arg, status)
 }
 
-// scanInstalledTypes walks .smith/types, loading every project-type.json it
-// finds. Corrupt or unloadable files are reported as warnings; the listing
-// continues. Sorted by name, then version.
+// scanInstalledTypes walks .smith/types, loading every installed type: a
+// directory holding project-type.json (the unpacked form of the type's
+// ingot). The installed hash is the ingot artifact's hash, for the
+// chain-of-custody annotation. Corrupt or unloadable entries are reported as
+// warnings; the listing continues. Legacy pre-ingot flat installs
+// (<name>@v<N>.json) are flagged for migration. Sorted by name, then
+// version.
 func scanInstalledTypes(installRoot string) ([]installedType, []string, error) {
 	var installed []installedType
 	var warnings []string
@@ -124,26 +129,42 @@ func scanInstalledTypes(installRoot string) ([]installedType, []string, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".json") {
+		if !d.IsDir() {
+			if filepath.Dir(path) == installRoot && strings.HasSuffix(d.Name(), ".json") {
+				warnings = append(warnings, fmt.Sprintf("legacy pre-ingot install %s; run smith sync to migrate", path))
+			}
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("cannot read %s: %v", path, err))
-			return nil
+		ptPath := filepath.Join(path, "project-type.json")
+		if _, err := os.Stat(ptPath); err != nil {
+			return nil // an ordinary directory, not an installed type
 		}
-		pt, err := projecttype.Load(path)
+		pt, err := projecttype.Load(ptPath)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("cannot load %s: %v", path, err))
-			return nil
+			warnings = append(warnings, fmt.Sprintf("cannot load %s: %v", ptPath, err))
+			return filepath.SkipDir
+		}
+		hash := ""
+		matches, globErr := filepath.Glob(filepath.Join(path, "*.ingot"))
+		switch {
+		case globErr != nil:
+			warnings = append(warnings, fmt.Sprintf("scanning %s: %v", path, globErr))
+		case len(matches) == 1:
+			if data, err := os.ReadFile(matches[0]); err == nil {
+				hash = ingot.Hash(data)
+			} else {
+				warnings = append(warnings, fmt.Sprintf("cannot read %s: %v", matches[0], err))
+			}
+		case len(matches) > 1:
+			warnings = append(warnings, fmt.Sprintf("%s contains multiple ingots; run smith sync", path))
 		}
 		installed = append(installed, installedType{
 			ref:  typeref.TypeRef{Name: pt.Name, Version: pt.Version},
-			path: path,
-			data: data,
+			path: ptPath,
+			hash: hash,
 			pt:   pt,
 		})
-		return nil
+		return filepath.SkipDir
 	})
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, warnings, nil
@@ -161,13 +182,16 @@ func scanInstalledTypes(installRoot string) ([]installedType, []string, error) {
 }
 
 // lockStatus annotates one installed type with its chain-of-custody status
-// against the lock.
-func lockStatus(lk *lock.Lock, ref typeref.TypeRef, data []byte) string {
+// against the lock: the pin's hash must match the installed ingot.
+func lockStatus(lk *lock.Lock, ref typeref.TypeRef, hash string) string {
 	pin, ok := lk.Types[ref.String()]
 	if !ok {
 		return "not pinned"
 	}
-	if pin.Hash != hashBytes(data) {
+	if hash == "" {
+		return "no ingot — run smith sync"
+	}
+	if pin.Hash != hash {
 		return "hash mismatch — run smith sync"
 	}
 	return "pinned"

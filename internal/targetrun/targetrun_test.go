@@ -104,7 +104,7 @@ func TestBuildClosureAndOrder(t *testing.T) {
 
 	// Roots select only alpha:build; the closure pulls in alpha:test (type
 	// dep) and beta:build (cross-project dep) as prerequisites.
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBuildDeduplicatesAcrossRoots(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}, {"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}, {"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestBuildCrossNamespaceClosure(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"web", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"web", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBuildCycleError(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err == nil || !strings.Contains(err.Error(), "dependency cycle") ||
 		!strings.Contains(err.Error(), "alpha:build") || !strings.Contains(err.Error(), "alpha:test") {
 		t.Fatalf("Build error = %v, want cycle naming alpha:build/alpha:test", err)
@@ -191,7 +191,7 @@ func TestBuildDanglingTypeTarget(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "alpha") {
 		t.Fatalf("Build error = %v, want dangling target named with project and type", err)
 	}
@@ -209,7 +209,7 @@ func TestBuildDanglingManifestTarget(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err == nil || !strings.Contains(err.Error(), `manifest of project "alpha" depends on "beta" with target "nope"`) {
 		t.Fatalf("Build error = %v, want manifest dangling-target error", err)
 	}
@@ -227,7 +227,7 @@ func TestExecuteFailFast(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "test"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "test"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestExecuteWorkingDir(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"repojob", "build"}, {"projjob", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"repojob", "build"}, {"projjob", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestExecuteWorkingDirManifestOverridesType(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestBuildRejectsUndeclaredManifestParam(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/lib@1) sets param "speed", which the type does not declare`) {
 		t.Fatalf("Build error = %v, want undeclared-param error naming project, key, and type", err)
 	}
@@ -342,7 +342,7 @@ func TestExecuteRendersStepsWithOverrides(t *testing.T) {
 	types := map[string]*projecttype.ProjectType{"alpha": greetingType(), "beta": greetingType()}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestExecuteEnvPrecedence(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestExecuteRealShellEnv(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestExecuteParamValueUsesComputedVars(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "info"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "info"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestExecuteEnvUsesParamsAndComputedVars(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestBuildPhaseARejectsParamReferencingParam(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/lib@1) param "config_path"`) ||
 		!strings.Contains(err.Error(), "param values may reference computed vars (SMITH_*) only, not other params") {
 		t.Fatalf("Build error = %v, want the param-references-param hard error", err)
@@ -573,7 +573,7 @@ func TestBuildPhaseARejectsUnknownVar(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
 	if err == nil || !strings.Contains(err.Error(), `param "config_path"`) ||
 		!strings.Contains(err.Error(), `unknown var "SMITH_FOO"`) {
 		t.Fatalf("Build error = %v, want the unknown-computed-var hard error", err)
@@ -603,7 +603,7 @@ func TestAttachmentClosureAndComputedVars(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo")
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo", "/repo/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestAttachmentRealShell(t *testing.T) {
 	}
 	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
 
-	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir)
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir, dir+"/.smith/types")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

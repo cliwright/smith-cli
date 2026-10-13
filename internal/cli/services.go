@@ -161,7 +161,7 @@ func (rc *repoContext) runService(cmd *cobra.Command, svc *service.Service, targ
 			svc.Name, target, strings.Join(rc.implementedServiceTargets(svc), ", "))
 	}
 	warnParallel(cmd)
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, typesDir(rc.repoRoot))
 	if err != nil {
 		return err
 	}
@@ -389,7 +389,7 @@ func (rc *repoContext) graphServiceTarget(cmd *cobra.Command, svc *service.Servi
 		return fmt.Errorf("no component in service %q implements target %q (targets: %s)",
 			svc.Name, target, strings.Join(rc.implementedServiceTargets(svc), ", "))
 	}
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, typesDir(rc.repoRoot))
 	if err != nil {
 		return err
 	}

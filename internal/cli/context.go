@@ -242,7 +242,7 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
 
-	mergedParams, err := targetrun.ResolveParams(absRoot, p, t)
+	mergedParams, err := targetrun.ResolveParams(absRoot, rc.typeDirFor(t), p, t)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 	for key, value := range mergedParams {
 		context[key] = value
 	}
-	for key, value := range targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name) {
+	for key, value := range targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name, rc.typeDirFor(t)) {
 		context[key] = value
 	}
 

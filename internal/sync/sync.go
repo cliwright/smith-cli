@@ -3,16 +3,16 @@
 // Transport is deliberately minimal: a registry source of the form
 // {git: "https://github.com/<org>/<repo>"} maps to the raw-content base
 // https://raw.githubusercontent.com/<org>/<repo>/main, and each type costs
-// exactly two GETs — <type>/v<N>/project-type.json and its checked-in
-// .sha256 sidecar. There is no git clone, no GitHub API, no commit-SHA
-// pinning, and no catalog listing: GitHub-only, main-is-truth, and a type is
-// immutable by policy (republishing a change means a new version).
+// exactly two GETs — <type>/v<N>/<name>@v<N>.ingot and its checked-in
+// .sha256 sidecar, which hashes the whole artifact. The ingot is the packed
+// form of the type directory (project-type.json plus scripts/ and help/);
+// there is no git clone, no GitHub API, no commit-SHA pinning, and no catalog
+// listing: GitHub-only, main-is-truth, and a type is immutable by policy
+// (republishing a change means a new version).
 package sync
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -39,19 +40,20 @@ func RawBase(gitURL string) (string, error) {
 	return "https://raw.githubusercontent.com/" + strings.TrimPrefix(gitURL, githubPrefix) + "/main", nil
 }
 
-// FetchedType is one verified project type download.
+// FetchedType is one verified project type download: the ingot bytes and
+// their hash, as recorded in the lock.
 type FetchedType struct {
-	Content []byte
+	Content []byte // the .ingot archive
 	Hash    string // "sha256:<hex>", as recorded in the lock
 }
 
 // Fetch downloads and verifies one type version from a raw-content base URL:
-// the project-type.json body and its .sha256 sidecar, which must hash the
-// body. A 404 on either GET yields an ErrNotFound wrap; a sidecar that does
-// not match the body is a hard error (it also catches a push landing between
-// the two GETs).
+// the ingot body and its .sha256 sidecar, which must hash the body. A 404 on
+// either GET yields an ErrNotFound wrap; a sidecar that does not match the
+// body is a hard error (it also catches a push landing between the two GETs).
 func Fetch(ctx context.Context, client *http.Client, base string, ref typeref.TypeRef) (*FetchedType, error) {
-	dir := fmt.Sprintf("%s/v%d/project-type.json", ref.Name, ref.Version)
+	ingotName := ingot.FileName(ref.Name, ref.Version)
+	dir := fmt.Sprintf("%s/v%d/%s", ref.Name, ref.Version, ingotName)
 	content, err := get(ctx, client, base+"/"+dir)
 	if err != nil {
 		return nil, fmt.Errorf("type %s: %w", ref, err)
@@ -61,25 +63,24 @@ func Fetch(ctx context.Context, client *http.Client, base string, ref typeref.Ty
 		return nil, fmt.Errorf("type %s: %w", ref, err)
 	}
 
-	want, err := parseSidecar(sidecar)
+	want, err := parseSidecar(sidecar, ingotName)
 	if err != nil {
 		return nil, fmt.Errorf("type %s: registry sidecar is malformed: %w", ref, err)
 	}
-	sum := sha256.Sum256(content)
-	got := hex.EncodeToString(sum[:])
-	if got != want {
+	if got := strings.TrimPrefix(ingot.Hash(content), "sha256:"); got != want {
 		return nil, fmt.Errorf("type %s: sidecar mismatch (registry content changed mid-fetch; retry, and if it persists the registry is broken)", ref)
 	}
-	return &FetchedType{Content: content, Hash: "sha256:" + got}, nil
+	return &FetchedType{Content: content, Hash: ingot.Hash(content)}, nil
 }
 
 var sidecarHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// parseSidecar reads a sha256sum-format sidecar: "<64-hex>  project-type.json".
-func parseSidecar(data []byte) (string, error) {
+// parseSidecar reads a sha256sum-format sidecar: "<64-hex>  <artifact-name>".
+// The name field must match the artifact it guards.
+func parseSidecar(data []byte, artifactName string) (string, error) {
 	fields := strings.Fields(string(data))
-	if len(fields) != 2 || fields[1] != "project-type.json" || !sidecarHashPattern.MatchString(fields[0]) {
-		return "", fmt.Errorf("want %q, got %q", "<sha256>  project-type.json", strings.TrimSpace(string(data)))
+	if len(fields) != 2 || fields[1] != artifactName || !sidecarHashPattern.MatchString(fields[0]) {
+		return "", fmt.Errorf("want %q, got %q", "<sha256>  "+artifactName, strings.TrimSpace(string(data)))
 	}
 	return fields[0], nil
 }

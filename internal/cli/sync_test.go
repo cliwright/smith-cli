@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/cliwright/smith/internal/config"
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
 )
 
@@ -40,18 +40,24 @@ func newFakeRegistries(t *testing.T) *fakeRegistries {
 	return f
 }
 
-// serveType publishes a type version with a correct sidecar under
-// /<orgRepo>/<name>/v<version>/project-type.json.
-func (f *fakeRegistries) serveType(orgRepo, name string, version int, content string) {
-	base := fmt.Sprintf("/%s/%s/v%d/project-type.json", orgRepo, name, version)
-	f.store[base] = []byte(content)
-	sum := sha256.Sum256([]byte(content))
-	f.store[base+".sha256"] = []byte(fmt.Sprintf("%x  project-type.json\n", sum[:]))
+// serveType publishes a type version as an ingot with a correct sidecar at
+// /<orgRepo>/<name>/v<version>/<flat-ingot-name>.
+func (f *fakeRegistries) serveType(t *testing.T, orgRepo, name string, version int, content string) {
+	f.serveTypeFiles(t, orgRepo, name, version, map[string]string{"project-type.json": content})
+}
+
+// serveTypeFiles publishes a type version whose ingot holds the given files.
+func (f *fakeRegistries) serveTypeFiles(t *testing.T, orgRepo, name string, version int, files map[string]string) {
+	ingotBytes := packFilesForTest(t, files)
+	base := fmt.Sprintf("/%s/%s/v%d/%s", orgRepo, name, version, ingot.FileName(name, version))
+	f.store[base] = ingotBytes
+	f.store[base+".sha256"] = []byte(fmt.Sprintf("%s  %s\n",
+		strings.TrimPrefix(ingot.Hash(ingotBytes), "sha256:"), ingot.FileName(name, version)))
 }
 
 func (f *fakeRegistries) corruptSidecar(orgRepo, name string, version int) {
-	base := fmt.Sprintf("/%s/%s/v%d/project-type.json", orgRepo, name, version)
-	f.store[base+".sha256"] = []byte("0000000000000000000000000000000000000000000000000000000000000000  project-type.json\n")
+	base := fmt.Sprintf("/%s/%s/v%d/%s", orgRepo, name, version, ingot.FileName(name, version))
+	f.store[base+".sha256"] = []byte(fmt.Sprintf("0000000000000000000000000000000000000000000000000000000000000000  %s\n", ingot.FileName(name, version)))
 }
 
 // useFakeRegistries redirects rawBaseURL at the fake server.
@@ -99,18 +105,21 @@ func lockPathIn(repo string) string {
 	return filepath.Join(repo, cacheDirName, lockJSONName)
 }
 
-func installedPath(repo, ref string) string {
-	return filepath.Join(repo, cacheDirName, "types", filepath.FromSlash(ref)+".json")
-}
-
 var testRegs = []regEntry{
 	{"cliwright", "https://github.com/cliwright/types"},
 	{"acme", "https://github.com/acme/types"},
 }
 
+// testTypeIngotHash is the lock hash a registry serving testTypeContent
+// pins: the hash of the ingot packing it, not of the bare JSON.
+func testTypeIngotHash(t *testing.T) string {
+	t.Helper()
+	return ingot.Hash(packFilesForTest(t, map[string]string{"project-type.json": testTypeContent}))
+}
+
 func TestSyncFetchesManifestRefs(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -124,7 +133,7 @@ func TestSyncFetchesManifestRefs(t *testing.T) {
 		t.Fatalf("sync: %v\noutput:\n%s", err, out)
 	}
 
-	installed, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
+	installed, err := os.ReadFile(filepath.Join(installedDir(t, repo, "python/astral/lib@v1"), "project-type.json"))
 	if err != nil {
 		t.Fatalf("installed type missing: %v", err)
 	}
@@ -143,9 +152,8 @@ func TestSyncFetchesManifestRefs(t *testing.T) {
 	if pin.Registry != "cliwright" {
 		t.Errorf("pin.Registry = %q, want cliwright", pin.Registry)
 	}
-	sum := sha256.Sum256([]byte(testTypeContent))
-	if want := fmt.Sprintf("sha256:%x", sum[:]); pin.Hash != want {
-		t.Errorf("pin.Hash = %q, want %q", pin.Hash, want)
+	if want := testTypeIngotHash(t); pin.Hash != want {
+		t.Errorf("pin.Hash = %q, want the ingot hash %q", pin.Hash, want)
 	}
 
 	for _, want := range []string{"fetched from cliwright", "lock written"} {
@@ -157,7 +165,7 @@ func TestSyncFetchesManifestRefs(t *testing.T) {
 
 func TestSyncExplicitRefs(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -168,7 +176,7 @@ func TestSyncExplicitRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v\noutput:\n%s", err, out)
 	}
-	if _, err := os.Stat(installedPath(repo, "python/astral/lib@v1")); err != nil {
+	if _, err := os.Stat(installedDir(t, repo, "python/astral/lib@v1")); err != nil {
 		t.Errorf("installed type missing: %v", err)
 	}
 	lk, err := lock.Load(lockPathIn(repo))
@@ -183,7 +191,7 @@ func TestSyncExplicitRefs(t *testing.T) {
 func TestSyncFallsBackToSecondRegistry(t *testing.T) {
 	f := newFakeRegistries(t)
 	// cliwright does not serve the type; acme does.
-	f.serveType("acme/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "acme/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -204,7 +212,7 @@ func TestSyncFallsBackToSecondRegistry(t *testing.T) {
 	if !strings.Contains(out, "fetched from acme") {
 		t.Errorf("sync output missing fallback notice:\n%s", out)
 	}
-	if _, err := os.Stat(installedPath(repo, "python/astral/lib@v1")); err != nil {
+	if _, err := os.Stat(installedDir(t, repo, "python/astral/lib@v1")); err != nil {
 		t.Errorf("installed type missing: %v", err)
 	}
 }
@@ -231,7 +239,7 @@ func TestSyncNotFoundNamesTheRef(t *testing.T) {
 
 func TestSyncSidecarMismatch(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	f.corruptSidecar("cliwright/types", "python/astral/lib", 1)
 	useFakeRegistries(t, f)
 
@@ -250,7 +258,7 @@ func TestSyncSidecarMismatch(t *testing.T) {
 
 func TestSyncSecondRunUpToDate(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -279,11 +287,11 @@ func TestSyncSecondRunUpToDate(t *testing.T) {
 	if string(lockAfter) != string(lockBefore) {
 		t.Errorf("second run rewrote the lock:\nbefore: %s\nafter: %s", lockBefore, lockAfter)
 	}
-	installedBefore, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
+	installedBefore, err := os.ReadFile(filepath.Join(installedDir(t, repo, "python/astral/lib@v1"), "project-type.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	installedAfter, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
+	installedAfter, err := os.ReadFile(filepath.Join(installedDir(t, repo, "python/astral/lib@v1"), "project-type.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +302,7 @@ func TestSyncSecondRunUpToDate(t *testing.T) {
 
 func TestSyncNoLockWhenAnyRefFails(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -312,7 +320,7 @@ func TestSyncNoLockWhenAnyRefFails(t *testing.T) {
 		t.Errorf("lock written despite failure (stat err = %v)", err)
 	}
 	// The successful fetch was staged in memory only — nothing installed.
-	if _, err := os.Stat(installedPath(repo, "python/astral/lib@v1")); !os.IsNotExist(err) {
+	if _, err := os.Stat(installedDir(t, repo, "python/astral/lib@v1")); !os.IsNotExist(err) {
 		t.Errorf("type installed despite later failure (stat err = %v)", err)
 	}
 }
@@ -341,8 +349,8 @@ func TestSyncNoRefsNoop(t *testing.T) {
 // fetch set and are pinned in the lock like any other type.
 func TestSyncUnionsAttachmentTypes(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
-	f.serveType("cliwright/types", "repo/uv/workspace", 1, `{"name":"repo/uv/workspace","version":1,"description":"uv workspace root environment","tools":["uv"],"targets":{"setup":["uv venv"]}}`)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "repo/uv/workspace", 1, `{"name":"repo/uv/workspace","version":1,"description":"uv workspace root environment","tools":["uv"],"targets":{"setup":["uv venv"]}}`)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -387,7 +395,7 @@ func TestSyncUnionsAttachmentTypes(t *testing.T) {
 	if !ok || attPin.Registry != "cliwright" {
 		t.Errorf("attachment pin = %+v (present %v)", attPin, ok)
 	}
-	if _, err := os.Stat(installedPath(repo, "repo/uv/workspace@v1")); err != nil {
+	if _, err := os.Stat(installedDir(t, repo, "repo/uv/workspace@v1")); err != nil {
 		t.Errorf("attachment type not installed: %v", err)
 	}
 }
@@ -424,7 +432,7 @@ func writeToolsRepo(t *testing.T, repo, toolsLine string) {
 
 func TestSyncUnionsToolsIntoRepoYML(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -477,7 +485,7 @@ func TestSyncUnionsToolsIntoRepoYML(t *testing.T) {
 
 func TestSyncToolsUnionSkipsExisting(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -555,7 +563,7 @@ func TestSyncFetchErrorsSurfaceBeforeStaleLock(t *testing.T) {
 
 func TestSyncForceRefetchesAndRestoresInstalled(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -567,9 +575,9 @@ func TestSyncForceRefetchesAndRestoresInstalled(t *testing.T) {
 	if _, err := run(t, "sync"); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
-	// Tamper with the installed copy; a plain sync would still call it up to
-	// date (the lock matches), but --force must re-download and restore it.
-	if err := os.WriteFile(installedPath(repo, "python/astral/lib@v1"), []byte("{}"), 0o644); err != nil {
+	// Tamper with the unpacked copy — the tree now drifts from the ingot, so
+	// even a plain sync would re-fetch; --force must re-download and restore.
+	if err := os.WriteFile(filepath.Join(installedDir(t, repo, "python/astral/lib@v1"), "project-type.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -580,7 +588,7 @@ func TestSyncForceRefetchesAndRestoresInstalled(t *testing.T) {
 	if !strings.Contains(out, "fetched from cliwright") || strings.Contains(out, "up to date") {
 		t.Errorf("force output missing the re-fetch:\n%s", out)
 	}
-	restored, err := os.ReadFile(installedPath(repo, "python/astral/lib@v1"))
+	restored, err := os.ReadFile(filepath.Join(installedDir(t, repo, "python/astral/lib@v1"), "project-type.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +599,7 @@ func TestSyncForceRefetchesAndRestoresInstalled(t *testing.T) {
 
 func TestSyncForceRebuildsLockFromScratch(t *testing.T) {
 	f := newFakeRegistries(t)
-	f.serveType("cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
 	useFakeRegistries(t, f)
 
 	repo := t.TempDir()
@@ -624,9 +632,8 @@ func TestSyncForceRebuildsLockFromScratch(t *testing.T) {
 	if !ok {
 		t.Fatalf("fresh pin missing after force rebuild")
 	}
-	sum := sha256.Sum256([]byte(testTypeContent))
-	if want := fmt.Sprintf("sha256:%x", sum[:]); pin.Hash != want {
-		t.Errorf("pin.Hash = %q, want the freshly fetched hash %q", pin.Hash, want)
+	if want := testTypeIngotHash(t); pin.Hash != want {
+		t.Errorf("pin.Hash = %q, want the freshly fetched ingot hash %q", pin.Hash, want)
 	}
 }
 
@@ -638,5 +645,81 @@ func TestSyncForceRejectsTypeArguments(t *testing.T) {
 	_, err := run(t, "sync", "--force", "python/astral/lib@1")
 	if err == nil || !strings.Contains(err.Error(), "takes no type arguments") {
 		t.Fatalf("error = %v, want the args guard", err)
+	}
+}
+
+// TestSyncInstallsIngotForm: the installed type is a directory holding the
+// ingot artifact and the unpacked tree (project-type.json plus scripts/).
+// The registry sidecar stays in the registry.
+func TestSyncInstallsIngotForm(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveTypeFiles(t, "cliwright/types", "python/astral/lib", 1, map[string]string{
+		"project-type.json": testTypeContent,
+		"scripts/build.sh":  "#!/bin/sh\necho build\n",
+	})
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, map[string][2]string{
+		"libs/demo": {"demo", "python/astral/lib@1"},
+	})
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	dir := installedDir(t, repo, "python/astral/lib@v1")
+	artifact, err := os.ReadFile(filepath.Join(dir, "python-astral-lib@v1.ingot"))
+	if err != nil {
+		t.Fatalf("installed ingot artifact missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "python-astral-lib@v1.ingot.sha256")); !os.IsNotExist(err) {
+		t.Errorf("registry sidecar must not be installed (stat err = %v)", err)
+	}
+	script, err := os.ReadFile(filepath.Join(dir, "scripts", "build.sh"))
+	if err != nil {
+		t.Fatalf("unpacked script missing: %v", err)
+	}
+	if string(script) != "#!/bin/sh\necho build\n" {
+		t.Errorf("unpacked script = %q", script)
+	}
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin := lk.Types["python/astral/lib@1"]; pin.Hash != ingot.Hash(artifact) {
+		t.Errorf("pin.Hash = %q, want the installed ingot's hash", pin.Hash)
+	}
+}
+
+// TestSyncMigratesLegacyFlatInstall: a pre-ingot flat <name>@v<N>.json is
+// replaced by the directory form on the next sync.
+func TestSyncMigratesLegacyFlatInstall(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, map[string][2]string{
+		"libs/demo": {"demo", "python/astral/lib@1"},
+	})
+	legacy := filepath.Join(repo, cacheDirName, "types", "python", "astral", "lib@v1.json")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte(testTypeContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy flat install survived migration (stat err = %v)", err)
+	}
+	if _, err := os.Stat(installedDir(t, repo, "python/astral/lib@v1")); err != nil {
+		t.Errorf("ingot form missing after migration: %v", err)
 	}
 }

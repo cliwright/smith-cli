@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +15,7 @@ import (
 
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/projecttype"
 	syncpkg "github.com/cliwright/smith/internal/sync"
@@ -38,14 +37,17 @@ manifest references. With arguments, fetches those explicit type refs
 regardless of manifests.
 
 Types are fetched over plain HTTP from raw.githubusercontent.com
-(GitHub-only for now): the project-type.json and its checked-in .sha256
-sidecar. The sidecar must hash the content. Types already installed whose
-hash matches the lock are reported "up to date". Everything is staged in
-memory; installed files and .smith/lock.json are written only if every
-fetch succeeded.
+(GitHub-only for now): the type's ingot (<name>@v<N>.ingot — a tar archive
+of project-type.json plus its scripts/ and help/) and its checked-in
+.sha256 sidecar, which must hash the artifact. Types already installed
+whose ingot verifies against the lock are reported "up to date".
+Everything is staged in memory; installed files and .smith/lock.json are
+written only if every fetch succeeded.
 
-Fetched types are installed into .smith/types/ — repo-local, checked in by
-default, so a clone builds without a network sync step.
+Fetched types are installed into .smith/types/<name>@v<N>/ — repo-local,
+checked in by default, so a clone builds without a network sync step. The
+directory holds the ingot itself plus its unpacked contents, so the lock
+pins the artifact and load verifies both the artifact and the tree.
 
 --force re-downloads every type the repo uses (no up-to-date shortcut) and
 rewrites .smith/lock.json from scratch, dropping pins for types the repo
@@ -126,16 +128,22 @@ func runSync(cmd *cobra.Command, args []string) error {
 	var fetchedRefs []typeref.TypeRef
 	fetched := 0
 	for _, ref := range refs {
-		dest := filepath.Join(installRoot, installRelPath(ref))
+		dest := filepath.Join(installRoot, installRelDir(ref))
 		if !force {
-			if data, err := os.ReadFile(dest); err == nil {
+			// The lock is consulted only when an installed directory exists:
+			// fetch failures still surface before complaints about a stale
+			// on-disk lock, and a repo with nothing installed needs no lock
+			// to make progress.
+			if _, err := os.Stat(dest); err == nil {
 				lockState, err := getLock()
 				if err != nil {
 					return err
 				}
-				if pin, ok := lockState.Types[ref.String()]; ok && pin.Hash == hashBytes(data) {
-					fmt.Fprintf(out, "%s: up to date\n", ref)
-					continue
+				if pin, ok := lockState.Types[ref.String()]; ok {
+					if err := ingot.VerifyInstalled(dest, pin.Hash); err == nil {
+						fmt.Fprintf(out, "%s: up to date\n", ref)
+						continue
+					}
 				}
 			}
 		}
@@ -148,7 +156,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		staged = append(staged, stagedInstall{path: dest, content: ft.Content})
+		staged = append(staged, stagedInstall{path: dest, ref: ref, content: ft.Content})
 		lockState.Types[ref.String()] = lock.TypePin{Registry: registry, Hash: ft.Hash}
 		fetchedRefs = append(fetchedRefs, ref)
 		fetched++
@@ -163,12 +171,18 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// Every fetch succeeded: commit installs, union the new types' tools
 	// into repo.yml, then the lock (atomically).
 	for _, s := range staged {
-		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		if err := os.MkdirAll(s.path, 0o755); err != nil {
 			return fmt.Errorf("installing %s: %w", s.path, err)
 		}
-		if err := os.WriteFile(s.path, s.content, 0o644); err != nil {
+		artifact := filepath.Join(s.path, flatArtifactName(s.ref))
+		if err := os.WriteFile(artifact, s.content, 0o644); err != nil {
+			return fmt.Errorf("installing %s: %w", artifact, err)
+		}
+		if err := ingot.Unpack(s.content, s.path); err != nil {
 			return fmt.Errorf("installing %s: %w", s.path, err)
 		}
+		// Migrate away from the pre-ingot flat install if one is present.
+		_ = os.Remove(filepath.Join(installRoot, legacyFlatPath(s.ref)))
 	}
 	repoYMLPath := filepath.Join(repoRoot, cacheDirName, repoYMLName)
 	added, err := unionFetchedTools(repoYMLPath, cfg, installRoot, fetchedRefs)
@@ -204,7 +218,7 @@ func unionFetchedTools(repoYMLPath string, cfg *config.RepoConfig, installRoot s
 	}
 	var added []string
 	for _, ref := range refs {
-		pt, err := projecttype.Load(filepath.Join(installRoot, installRelPath(ref)))
+		pt, err := projecttype.Load(filepath.Join(installRoot, installRelDir(ref), "project-type.json"))
 		if err != nil {
 			return nil, fmt.Errorf("installed type %s: %w", ref, err)
 		}
@@ -329,18 +343,27 @@ func fetchWithFallback(ctx context.Context, client *http.Client, bases []namedBa
 }
 
 type stagedInstall struct {
-	path    string
-	content []byte
+	path    string // installed directory (.smith/types/<name>@v<N>)
+	ref     typeref.TypeRef
+	content []byte // ingot bytes
 }
 
-// installRelPath is the path of one installed type relative to the
-// repo-local types dir (.smith/types).
-func installRelPath(ref typeref.TypeRef) string {
+// installRelDir is the installed directory of one type relative to the
+// repo-local types dir (.smith/types): <name>@v<N>. It holds the ingot
+// artifact, project-type.json, and the unpacked scripts/ and help/.
+func installRelDir(ref typeref.TypeRef) string {
+	return filepath.FromSlash(ingot.RefName(ref.Name, ref.Version))
+}
+
+// legacyFlatPath is the pre-ingot installed form (<name>@v<N>.json); it is
+// removed when the ingot form is installed.
+func legacyFlatPath(ref typeref.TypeRef) string {
 	return filepath.FromSlash(fmt.Sprintf("%s@v%d.json", ref.Name, ref.Version))
 }
 
-// hashBytes renders the sha256 of data in the lock's "sha256:<hex>" form.
-func hashBytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:])
+// flatArtifactName is the ingot artifact file name inside the installed
+// directory (single file; the canonical <name>@v<N>.ingot with slashes
+// flattened).
+func flatArtifactName(ref typeref.TypeRef) string {
+	return ingot.FileName(ref.Name, ref.Version)
 }
