@@ -42,11 +42,35 @@ func (f *fakeRunner) Run(_ context.Context, opts runner.Options, name string, ar
 }
 
 // useFakeRunner installs the fake and returns it.
-func useFakeRunner(t *testing.T, f *fakeRunner) {
+func useFakeRunner(t *testing.T, f commandRunner) {
 	t.Helper()
 	old := newCommandRunner
 	newCommandRunner = f
 	t.Cleanup(func() { newCommandRunner = old })
+}
+
+// writingRunner fakes cookiecutter by materializing files under the
+// --output-dir named in the invocation (always the trailing argument pair).
+type writingRunner struct {
+	*fakeRunner
+	files map[string]string // slash-separated paths relative to the output dir
+}
+
+func (w *writingRunner) Run(ctx context.Context, opts runner.Options, name string, args ...string) error {
+	if err := w.fakeRunner.Run(ctx, opts, name, args...); err != nil {
+		return err
+	}
+	outDir := args[len(args)-1]
+	for rel, content := range w.files {
+		p := filepath.Join(outDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeNewRepo creates an initialized repo whose repo.yml lists the given
@@ -177,7 +201,7 @@ func TestNewArgValidation(t *testing.T) {
 		{args: []string{"new", "python", "--version", "1"}, wantErr: "want <language>/<kind>"},
 		{args: []string{"new", "python/lib/extra", "--version", "1"}, wantErr: "want <language>/<kind>"},
 		{args: []string{"new", "python/", "--version", "1"}, wantErr: "want <language>/<kind>"},
-		{args: []string{"new", "python/widget", "--version", "1"}, wantErr: `unknown kind "widget" (known kinds: image, lib, service, tool)`},
+		{args: []string{"new", "python/widget", "--version", "1"}, wantErr: `unknown kind "widget" (known kinds: image, lib, service, tool, type)`},
 		{args: []string{"new", "python/lib", "--version", "0"}, wantErr: "positive integer"},
 		{args: []string{"new", "python/lib", "--version", "-2"}, wantErr: "positive integer"},
 		{args: []string{"new", "python/lib"}, wantErr: "required flag"}, // --version missing
@@ -251,7 +275,7 @@ func TestNewOutsideRepo(t *testing.T) {
 	}
 }
 
-func TestNewNoTemplatesRegistry(t *testing.T) {
+func TestNewTemplatesPathSourceIsUsed(t *testing.T) {
 	f := &fakeRunner{}
 	useFakeRunner(t, f)
 
@@ -264,19 +288,179 @@ func TestNewNoTemplatesRegistry(t *testing.T) {
 		"registries:\n" +
 		"  - name: cliwright\n" +
 		"    types: {git: https://github.com/cliwright/smith-project-types}\n" +
-		"    templates: {path: ../local-templates}\n" + // path source, no git URL
+		"    templates: {path: ../local-templates}\n" + // local dev source, no git URL
 		"workspace:\n  project_roots:\n    - libs\n"
 	if err := os.WriteFile(filepath.Join(smithDir, "repo.yml"), []byte(repoYML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(repo)
 
-	_, err := run(t, "new", "python/lib", "--version", "1")
-	if err == nil || !strings.Contains(err.Error(), "no registry with a templates git source") {
-		t.Fatalf("error = %v, want no-templates-registry error", err)
+	out, err := run(t, "new", "python/lib", "--version", "1")
+	if err != nil {
+		t.Fatalf("new: %v\noutput:\n%s", err, out)
 	}
-	if len(f.ran) != 0 {
-		t.Errorf("cookiecutter ran without a templates source: %v", f.ran)
+	if len(f.ran) != 1 {
+		t.Fatalf("cookiecutter invocations = %d, want 1", len(f.ran))
+	}
+	// cookiecutter accepts a local directory in place of a repo URL.
+	if got := f.ran[0].args[0]; got != "../local-templates" {
+		t.Errorf("cookiecutter source = %q, want ../local-templates", got)
+	}
+}
+
+const validTypeJSON = `{"name": "python/acme/lib", "version": 1, "description": "acme python lib", "tools": ["uv"], "targets": {"build": ["uv build"]}}`
+
+func TestNewTypeKindScaffoldsValidatesAndHintsSmelt(t *testing.T) {
+	f := &fakeRunner{}
+	useFakeRunner(t, &writingRunner{fakeRunner: f, files: map[string]string{
+		"python/acme/lib/v1/project-type.json": validTypeJSON,
+	}})
+
+	repo := t.TempDir()
+	writeNewRepo(t, repo, "https://github.com/cliwright/smith-project-templates")
+	t.Chdir(repo)
+
+	out, err := run(t, "new", "smith/type", "--version", "1")
+	if err != nil {
+		t.Fatalf("new: %v\noutput:\n%s", err, out)
+	}
+	if got := f.ran[0].args[2]; got != "smith/type/v1" {
+		t.Errorf("--directory arg = %q, want smith/type/v1", got)
+	}
+	if !strings.Contains(out, "Validated python/acme/lib@1") {
+		t.Errorf("output missing validation line:\n%s", out)
+	}
+	if !strings.Contains(out, "next: smith smelt --path types/python/acme/lib/v1") {
+		t.Errorf("output missing smelt hint:\n%s", out)
+	}
+
+	cfg, err := config.Load(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if !slices.Contains(cfg.Workspace.ProjectRoots, "types") {
+		t.Errorf("project_roots = %v, want types appended", cfg.Workspace.ProjectRoots)
+	}
+}
+
+func TestNewTypeKindValidationFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "version disagrees with v-dir",
+			content: `{"name": "python/acme/lib", "version": 2, "description": "x", "tools": ["uv"], "targets": {"build": ["uv build"]}}`,
+			wantErr: "registry-layout check",
+		},
+		{
+			name:    "schema violation",
+			content: `{"name": "python/acme/lib", "version": 1}`,
+			wantErr: "scaffolded type is invalid",
+		},
+		{
+			name:    "not JSON",
+			content: `{not json`,
+			wantErr: "scaffolded type is invalid",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeRunner{}
+			useFakeRunner(t, &writingRunner{fakeRunner: f, files: map[string]string{
+				"python/acme/lib/v1/project-type.json": tt.content,
+			}})
+			repo := t.TempDir()
+			writeNewRepo(t, repo, "https://github.com/cliwright/smith-project-templates")
+			t.Chdir(repo)
+
+			_, err := run(t, "new", "smith/type", "--version", "1")
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+			}
+			if len(f.ran) != 1 {
+				t.Errorf("cookiecutter invocations = %d, want 1 (it ran; the check failed)", len(f.ran))
+			}
+			cfg, loadErr := config.Load(filepath.Join(repo, ".smith", "repo.yml"))
+			if loadErr != nil {
+				t.Fatalf("config.Load: %v", loadErr)
+			}
+			if slices.Contains(cfg.Workspace.ProjectRoots, "types") {
+				t.Errorf("project_roots = %v, want types NOT appended on validation failure", cfg.Workspace.ProjectRoots)
+			}
+		})
+	}
+}
+
+func TestNewTypeKindNoManifestIsANote(t *testing.T) {
+	f := &fakeRunner{}
+	useFakeRunner(t, &writingRunner{fakeRunner: f, files: map[string]string{}})
+
+	repo := t.TempDir()
+	writeNewRepo(t, repo, "https://github.com/cliwright/smith-project-templates")
+	t.Chdir(repo)
+
+	out, err := run(t, "new", "smith/type", "--version", "1")
+	if err != nil {
+		t.Fatalf("new: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "no new project-type.json") {
+		t.Errorf("output missing note:\n%s", out)
+	}
+	cfg, err := config.Load(filepath.Join(repo, ".smith", "repo.yml"))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if !slices.Contains(cfg.Workspace.ProjectRoots, "types") {
+		t.Errorf("project_roots = %v, want types appended (cookiecutter succeeded)", cfg.Workspace.ProjectRoots)
+	}
+}
+
+func TestNewTypeKindMultipleManifestsFail(t *testing.T) {
+	f := &fakeRunner{}
+	useFakeRunner(t, &writingRunner{fakeRunner: f, files: map[string]string{
+		"python/acme/lib/v1/project-type.json":  validTypeJSON,
+		"python/acme/tool/v1/project-type.json": strings.Replace(validTypeJSON, `"kind"`, `"kind"`, 1),
+	}})
+
+	repo := t.TempDir()
+	writeNewRepo(t, repo, "https://github.com/cliwright/smith-project-templates")
+	t.Chdir(repo)
+
+	_, err := run(t, "new", "smith/type", "--version", "1")
+	if err == nil || !strings.Contains(err.Error(), "expected exactly one new project-type.json") {
+		t.Fatalf("error = %v, want multiple-manifests error", err)
+	}
+}
+
+func TestNewTypeKindV2NextToExistingV1(t *testing.T) {
+	f := &fakeRunner{}
+	useFakeRunner(t, &writingRunner{fakeRunner: f, files: map[string]string{
+		"python/acme/lib/v2/project-type.json": strings.Replace(validTypeJSON, `"version": 1`, `"version": 2`, 1),
+	}})
+
+	repo := t.TempDir()
+	writeNewRepo(t, repo, "https://github.com/cliwright/smith-project-templates")
+	t.Chdir(repo)
+	// An earlier scaffold already lives in the tree; only v2 is new.
+	v1 := filepath.Join(repo, "types", "python", "acme", "lib", "v1")
+	if err := os.MkdirAll(v1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v1, "project-type.json"), []byte(validTypeJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "new", "smith/type", "--version", "1")
+	if err != nil {
+		t.Fatalf("new: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "Validated python/acme/lib@2") {
+		t.Errorf("output should validate the NEW version:\n%s", out)
+	}
+	if !strings.Contains(out, "next: smith smelt --path types/python/acme/lib/v2") {
+		t.Errorf("output missing v2 smelt hint:\n%s", out)
 	}
 }
 
