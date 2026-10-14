@@ -179,3 +179,85 @@ func TestFetch(t *testing.T) {
 		}
 	})
 }
+
+// writeLocalRegistry lays out a smelted type under a local registry root:
+// <root>/<name>/v<N>/<flat>.ingot + .sha256 — the same layout "smith smelt"
+// writes in-place and the sync CLI's types.path source reads.
+func writeLocalRegistry(t *testing.T, name string, version int, ingotBytes []byte) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, filepath.FromSlash(name), fmt.Sprintf("v%d", version))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(dir, ingot.FileName(name, version))
+	if err := os.WriteFile(artifact, ingotBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := fmt.Sprintf("%s  %s\n",
+		strings.TrimPrefix(ingot.Hash(ingotBytes), "sha256:"), ingot.FileName(name, version))
+	if err := os.WriteFile(artifact+".sha256", []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestFetchLocal(t *testing.T) {
+	const content = `{"name":"python/astral/lib","version":1,"description":"x","tools":["python"],"targets":{"build":["true"]}}`
+	good := packForTest(t, map[string]string{"project-type.json": content})
+	artifactPath := func(root string) string {
+		return filepath.Join(root, "python", "astral", "lib", "v1", ingot.FileName("python/astral/lib", 1))
+	}
+
+	t.Run("ok", func(t *testing.T) {
+		root := writeLocalRegistry(t, "python/astral/lib", 1, good)
+		ft, err := FetchLocal(root, mustRef(t, "python/astral/lib@1"))
+		if err != nil {
+			t.Fatalf("FetchLocal: %v", err)
+		}
+		if ft.Hash != ingot.Hash(good) {
+			t.Errorf("Hash = %q, want the artifact's hash %q", ft.Hash, ingot.Hash(good))
+		}
+	})
+
+	t.Run("missing artifact is ErrNotFound", func(t *testing.T) {
+		_, err := FetchLocal(t.TempDir(), mustRef(t, "python/astral/lib@1"))
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("missing sidecar is ErrNotFound", func(t *testing.T) {
+		root := writeLocalRegistry(t, "python/astral/lib", 1, good)
+		if err := os.Remove(artifactPath(root) + ".sha256"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := FetchLocal(root, mustRef(t, "python/astral/lib@1"))
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("artifact changed after smelting is a hard error", func(t *testing.T) {
+		root := writeLocalRegistry(t, "python/astral/lib", 1, good)
+		tampered := packForTest(t, map[string]string{"project-type.json": strings.Replace(content, `"description":"x"`, `"description":"y"`, 1)})
+		if err := os.WriteFile(artifactPath(root), tampered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := FetchLocal(root, mustRef(t, "python/astral/lib@1"))
+		if err == nil || !strings.Contains(err.Error(), "sidecar mismatch") {
+			t.Fatalf("err = %v, want sidecar mismatch", err)
+		}
+	})
+
+	t.Run("malformed sidecar is a hard error", func(t *testing.T) {
+		root := writeLocalRegistry(t, "python/astral/lib", 1, good)
+		if err := os.WriteFile(artifactPath(root)+".sha256", []byte("garbage\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := FetchLocal(root, mustRef(t, "python/astral/lib@1"))
+		if err == nil || !strings.Contains(err.Error(), "malformed") {
+			t.Fatalf("err = %v, want malformed sidecar", err)
+		}
+	})
+}

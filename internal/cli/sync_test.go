@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cliwright/smith/internal/config"
@@ -22,6 +23,7 @@ const testTypeContent = `{"name":"python/astral/lib","version":1,"description":"
 type fakeRegistries struct {
 	server *httptest.Server
 	store  map[string][]byte
+	hits   int32 // requests served, so tests can assert a registry was never tried
 }
 
 func newFakeRegistries(t *testing.T) *fakeRegistries {
@@ -29,6 +31,7 @@ func newFakeRegistries(t *testing.T) *fakeRegistries {
 	f := &fakeRegistries{store: map[string][]byte{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&f.hits, 1)
 		body, ok := f.store[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -71,10 +74,12 @@ func useFakeRegistries(t *testing.T, f *fakeRegistries) {
 	t.Cleanup(func() { rawBaseURL = old })
 }
 
-type regEntry struct{ name, git string }
+type regEntry struct{ name, src string }
 
 // writeSyncRepo writes an initialized repo with the given registries (in
 // repo.yml priority order) and manifests (dir -> {project name, type ref}).
+// Each registry's src is the types-source body as written in repo.yml
+// ("git: <url>" or "path: <dir>").
 func writeSyncRepo(t *testing.T, repo string, regs []regEntry, manifests map[string][2]string) {
 	t.Helper()
 	smithDir := filepath.Join(repo, ".smith")
@@ -84,7 +89,7 @@ func writeSyncRepo(t *testing.T, repo string, regs []regEntry, manifests map[str
 	var b strings.Builder
 	b.WriteString("version: 1\nname: mock\nregistries:\n")
 	for _, reg := range regs {
-		fmt.Fprintf(&b, "  - name: %s\n    types: {git: %s}\n    templates: {git: https://example.com/templates}\n", reg.name, reg.git)
+		fmt.Fprintf(&b, "  - name: %s\n    types: {%s}\n    templates: {git: https://example.com/templates}\n", reg.name, reg.src)
 	}
 	b.WriteString("workspace:\n  project_roots:\n    - libs\n")
 	if err := os.WriteFile(filepath.Join(smithDir, "repo.yml"), []byte(b.String()), 0o644); err != nil {
@@ -107,8 +112,8 @@ func lockPathIn(repo string) string {
 }
 
 var testRegs = []regEntry{
-	{"cliwright", "https://github.com/cliwright/types"},
-	{"acme", "https://github.com/acme/types"},
+	{"cliwright", "git: https://github.com/cliwright/types"},
+	{"acme", "git: https://github.com/acme/types"},
 }
 
 // testTypeIngotHash is the lock hash a registry serving testTypeContent
@@ -797,5 +802,133 @@ func TestSyncForceWipesLegacyFlatInstalls(t *testing.T) {
 	}
 	if _, err := os.Stat(stray); !os.IsNotExist(err) {
 		t.Errorf("stray legacy install survived --force (stat err = %v)", err)
+	}
+}
+
+// writeLocalType lays out a smelted type in a local registry root:
+// <root>/<name>/v<N>/<flat>.ingot + .sha256 — exactly what
+// "smith new smith/type" + "smith smelt" leave in a repo's types/ tree.
+func writeLocalType(t *testing.T, root, name string, version int, content string) {
+	t.Helper()
+	dir := filepath.Join(root, filepath.FromSlash(name), fmt.Sprintf("v%d", version))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ingotBytes := packFilesForTest(t, map[string]string{"project-type.json": content})
+	artifact := filepath.Join(dir, ingot.FileName(name, version))
+	if err := os.WriteFile(artifact, ingotBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := fmt.Sprintf("%s  %s\n",
+		strings.TrimPrefix(ingot.Hash(ingotBytes), "sha256:"), ingot.FileName(name, version))
+	if err := os.WriteFile(artifact+".sha256", []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncFetchesFromLocalPathRegistry(t *testing.T) {
+	f := newFakeRegistries(t)
+	useFakeRegistries(t, f) // the HTTP registry must never be contacted
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"},
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, nil)
+	writeLocalType(t, filepath.Join(repo, "types"), "python/acme/lib", 1, testTypeContent)
+	t.Chdir(repo)
+
+	out, err := run(t, "sync", "python/acme/lib@1")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "fetched from local") {
+		t.Errorf("output missing local-fetch line:\n%s", out)
+	}
+	if got := atomic.LoadInt32(&f.hits); got != 0 {
+		t.Errorf("HTTP registry got %d request(s), want 0 (local hit short-circuits)", got)
+	}
+
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatalf("lock.Load: %v", err)
+	}
+	pin := lk.Types["python/acme/lib@1"]
+	if pin.Registry != "local" {
+		t.Errorf("pin.Registry = %q, want local", pin.Registry)
+	}
+	if pin.Hash != testTypeIngotHash(t) {
+		t.Errorf("pin.Hash = %q, want the ingot hash %q", pin.Hash, testTypeIngotHash(t))
+	}
+	if _, err := os.Stat(installedDir(t, repo, "python/acme/lib@v1")); err != nil {
+		t.Errorf("installed type missing: %v", err)
+	}
+}
+
+func TestSyncLocalMissFallsBackToHTTPRegistry(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType(t, "cliwright/types", "python/acme/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"}, // empty tree: the type is not local
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, nil)
+	if err := os.MkdirAll(filepath.Join(repo, "types"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	out, err := run(t, "sync", "python/acme/lib@1")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "fetched from cliwright") {
+		t.Errorf("output missing fallback line:\n%s", out)
+	}
+}
+
+func TestSyncLocalNotFoundAnywhere(t *testing.T) {
+	f := newFakeRegistries(t)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"},
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, nil)
+	t.Chdir(repo)
+
+	_, err := run(t, "sync", "python/acme/lib@1")
+	if err == nil || !strings.Contains(err.Error(), "not found in any configured registry") {
+		t.Fatalf("sync error = %v, want not-found-anywhere", err)
+	}
+	if got := atomic.LoadInt32(&f.hits); got == 0 {
+		t.Error("HTTP registry was never tried")
+	}
+}
+
+func TestRegistryBasesResolvesRelativePathsAgainstRepoRoot(t *testing.T) {
+	cfg := &config.RepoConfig{Registries: []config.Registry{
+		{Name: "rel", Types: config.Source{Path: "types"}, Templates: config.Source{Git: "https://example.com/t"}},
+		{Name: "abs", Types: config.Source{Path: "/var/types"}, Templates: config.Source{Git: "https://example.com/t"}},
+		{Name: "git", Types: config.Source{Git: "https://github.com/cliwright/types"}, Templates: config.Source{Git: "https://example.com/t"}},
+	}}
+	bases, err := registryBases(cfg, "/repo")
+	if err != nil {
+		t.Fatalf("registryBases: %v", err)
+	}
+	if len(bases) != 3 {
+		t.Fatalf("bases = %d, want 3", len(bases))
+	}
+	if bases[0].local != filepath.Join("/repo", "types") {
+		t.Errorf("relative path resolved to %q, want %q", bases[0].local, filepath.Join("/repo", "types"))
+	}
+	if bases[1].local != "/var/types" {
+		t.Errorf("absolute path became %q", bases[1].local)
+	}
+	if bases[2].base == "" || bases[2].local != "" {
+		t.Errorf("git registry = %+v, want HTTP base only", bases[2])
 	}
 }

@@ -36,13 +36,18 @@ With no arguments, discovers the repo's projects and fetches the type each
 manifest references. With arguments, fetches those explicit type refs
 regardless of manifests.
 
-Types are fetched over plain HTTP from raw.githubusercontent.com
-(GitHub-only for now): the type's ingot (<name>@v<N>.ingot — a tar archive
-of project-type.json plus its scripts/ and help/) and its checked-in
-.sha256 sidecar, which must hash the artifact. Types already installed
-whose ingot verifies against the lock are reported "up to date".
-Everything is staged in memory; installed files and .smith/lock.json are
-written only if every fetch succeeded.
+A registry's types source is either a git URL or a local directory
+(opt-in via types.path in .smith/repo.yml — e.g. a repo-local types/
+tree populated by "smith new smith/type" + "smith smelt"). Git sources
+fetch over plain HTTP from raw.githubusercontent.com (GitHub-only for
+now): the type's ingot (<name>@v<N>.ingot — a tar archive of
+project-type.json plus its scripts/ and help/) and its checked-in .sha256
+sidecar, which must hash the artifact. Local sources read the same two
+files from <path>/<type>/v<N>/ on disk; a missing artifact falls through
+to the next registry like a 404. Registries are tried in repo.yml
+priority order. Types already installed whose ingot verifies against the
+lock are reported "up to date". Everything is staged in memory; installed
+files and .smith/lock.json are written only if every fetch succeeded.
 
 Fetched types are installed into .smith/types/<name>@v<N>/ — repo-local,
 checked in by default, so a clone builds without a network sync step. The
@@ -131,7 +136,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	installRoot := typesDir(repoRoot)
 
-	bases, err := registryBases(cfg)
+	bases, err := registryBases(cfg, repoRoot)
 	if err != nil {
 		return err
 	}
@@ -318,19 +323,27 @@ func loadExistingLock(lockPath string) (*lock.Lock, error) {
 	return loaded, nil
 }
 
+// namedBase is one registry in repo.yml priority order: either a raw-content
+// HTTP base (local empty) or a local registry tree root (base empty).
 type namedBase struct {
-	name string
-	base string
+	name  string
+	base  string // raw-content HTTP base
+	local string // local directory in registry layout (types.path source)
 }
 
-// registryBases maps the repo's registries (repo.yml priority order) to raw
-// base URLs. Path sources are a dev escape hatch that sync does not support
-// yet — error rather than silently skipping a priority registry.
-func registryBases(cfg *config.RepoConfig) ([]namedBase, error) {
+// registryBases maps the repo's registries (repo.yml priority order) to
+// fetch locations: git sources become raw base URLs, path sources stay local
+// directories read in place. Relative paths resolve against the repo root.
+func registryBases(cfg *config.RepoConfig, repoRoot string) ([]namedBase, error) {
 	var bases []namedBase
 	for _, reg := range cfg.Registries {
 		if reg.Types.Path != "" {
-			return nil, fmt.Errorf("registry %q uses a local path source, which sync does not support yet", reg.Name)
+			abs := reg.Types.Path
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(repoRoot, abs)
+			}
+			bases = append(bases, namedBase{name: reg.Name, local: abs})
+			continue
 		}
 		base, err := rawBaseURL(reg.Types.Git)
 		if err != nil {
@@ -341,11 +354,12 @@ func registryBases(cfg *config.RepoConfig) ([]namedBase, error) {
 	return bases, nil
 }
 
-// fetchWithFallback tries each registry in priority order; only a 404 moves
-// on to the next. When every registry 404s, the error names the ref.
+// fetchWithFallback tries each registry in priority order; only "not here"
+// (HTTP 404, or a missing file for a local source) moves on to the next.
+// When every registry misses, the error names the ref.
 func fetchWithFallback(ctx context.Context, client *http.Client, bases []namedBase, ref typeref.TypeRef) (*syncpkg.FetchedType, string, error) {
 	for _, b := range bases {
-		ft, err := syncpkg.Fetch(ctx, client, b.base, ref)
+		ft, err := fetchFrom(ctx, client, b, ref)
 		if errors.Is(err, syncpkg.ErrNotFound) {
 			continue
 		}
@@ -355,6 +369,14 @@ func fetchWithFallback(ctx context.Context, client *http.Client, bases []namedBa
 		return ft, b.name, nil
 	}
 	return nil, "", fmt.Errorf("type %s not found in any configured registry (check name/version or that it's published)", ref)
+}
+
+// fetchFrom fetches one ref from one registry, local or HTTP.
+func fetchFrom(ctx context.Context, client *http.Client, b namedBase, ref typeref.TypeRef) (*syncpkg.FetchedType, error) {
+	if b.local != "" {
+		return syncpkg.FetchLocal(b.local, ref)
+	}
+	return syncpkg.Fetch(ctx, client, b.base, ref)
 }
 
 type stagedInstall struct {

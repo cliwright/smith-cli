@@ -1,14 +1,17 @@
-// Package sync fetches project types from registries over plain HTTP.
+// Package sync fetches project types from registries: raw-content HTTP
+// against GitHub, or a local directory in registry layout (a registry
+// source's "path" — the dev escape hatch for authoring loops).
 //
 // Transport is deliberately minimal: a registry source of the form
 // {git: "https://github.com/<org>/<repo>"} maps to the raw-content base
 // https://raw.githubusercontent.com/<org>/<repo>/main, and each type costs
 // exactly two GETs — <type>/v<N>/<name>@v<N>.ingot and its checked-in
-// .sha256 sidecar, which hashes the whole artifact. The ingot is the packed
-// form of the type directory (project-type.json plus scripts/ and help/);
-// there is no git clone, no GitHub API, no commit-SHA pinning, and no catalog
-// listing: GitHub-only, main-is-truth, and a type is immutable by policy
-// (republishing a change means a new version).
+// .sha256 sidecar, which hashes the whole artifact. A {path: "<dir>"} source
+// instead reads the same two files from <dir>/<type>/v<N>/ on disk. The
+// ingot is the packed form of the type directory (project-type.json plus
+// scripts/ and help/); there is no git clone, no GitHub API, no commit-SHA
+// pinning, and no catalog listing: main-is-truth, and a type is immutable by
+// policy (republishing a change means a new version).
 package sync
 
 import (
@@ -17,6 +20,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -69,6 +74,39 @@ func Fetch(ctx context.Context, client *http.Client, base string, ref typeref.Ty
 	}
 	if got := strings.TrimPrefix(ingot.Hash(content), "sha256:"); got != want {
 		return nil, fmt.Errorf("type %s: sidecar mismatch (registry content changed mid-fetch; retry, and if it persists the registry is broken)", ref)
+	}
+	return &FetchedType{Content: content, Hash: ingot.Hash(content)}, nil
+}
+
+// FetchLocal reads and verifies one type version from a local registry
+// tree — the same two artifacts Fetch downloads, read from
+// <root>/<type>/v<N>/ on disk (the layout `smith smelt` writes). A missing
+// artifact or sidecar yields an ErrNotFound wrap, mirroring the HTTP 404
+// path so callers fall through to the next registry in priority order; a
+// sidecar that does not match the artifact is a hard error.
+func FetchLocal(root string, ref typeref.TypeRef) (*FetchedType, error) {
+	ingotName := ingot.FileName(ref.Name, ref.Version)
+	artifact := filepath.Join(root, filepath.FromSlash(ref.Name), fmt.Sprintf("v%d", ref.Version), ingotName)
+	content, err := os.ReadFile(artifact)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%s: %w", artifact, ErrNotFound)
+		}
+		return nil, fmt.Errorf("type %s: reading %s: %w", ref, artifact, err)
+	}
+	sidecar, err := os.ReadFile(artifact + ".sha256")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%s: %w", artifact+".sha256", ErrNotFound)
+		}
+		return nil, fmt.Errorf("type %s: reading %s: %w", ref, artifact+".sha256", err)
+	}
+	want, err := parseSidecar(sidecar, ingotName)
+	if err != nil {
+		return nil, fmt.Errorf("type %s: registry sidecar is malformed: %w", ref, err)
+	}
+	if got := strings.TrimPrefix(ingot.Hash(content), "sha256:"); got != want {
+		return nil, fmt.Errorf("type %s: sidecar mismatch (the type directory changed after smelting; re-run smith smelt)", ref)
 	}
 	return &FetchedType{Content: content, Hash: ingot.Hash(content)}, nil
 }
