@@ -25,6 +25,7 @@ var kindRoots = map[string]string{
 	"tool":    "tools",
 	"service": "services",
 	"image":   "images",
+	"infra":   "infra",
 	"type":    "types",
 }
 
@@ -46,7 +47,8 @@ func newNewCmd() *cobra.Command {
 Runs cookiecutter (which must be on PATH — BYOT) against the templates source
 of the first registry configured in .smith/repo.yml, with the template at
 <language>/<kind>/v<version>, and places the result under the root that kind
-maps to (lib→libs, tool→tools, service→services, image→images, type→types).
+maps to (lib→libs, tool→tools, service→services, image→images, infra→infra,
+type→types).
 
 The template itself ships the project's smith.yml; smith does not generate
 one (the user maintains it; a future CI check in the templates repo enforces

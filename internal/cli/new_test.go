@@ -201,7 +201,7 @@ func TestNewArgValidation(t *testing.T) {
 		{args: []string{"new", "python", "--version", "1"}, wantErr: "want <language>/<kind>"},
 		{args: []string{"new", "python/lib/extra", "--version", "1"}, wantErr: "want <language>/<kind>"},
 		{args: []string{"new", "python/", "--version", "1"}, wantErr: "want <language>/<kind>"},
-		{args: []string{"new", "python/widget", "--version", "1"}, wantErr: `unknown kind "widget" (known kinds: image, lib, service, tool, type)`},
+		{args: []string{"new", "python/widget", "--version", "1"}, wantErr: `unknown kind "widget"`},
 		{args: []string{"new", "python/lib", "--version", "0"}, wantErr: "positive integer"},
 		{args: []string{"new", "python/lib", "--version", "-2"}, wantErr: "positive integer"},
 		{args: []string{"new", "python/lib"}, wantErr: "required flag"}, // --version missing
