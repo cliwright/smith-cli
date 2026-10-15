@@ -117,14 +117,12 @@ func renderTree(w io.Writer, repoName string, cfg *config.RepoConfig, projects [
 		repoNode := insert("repo")
 		repoNode.synthetic = true
 		for alias, rt := range cfg.RepoTargets {
-			child := getChild(repoNode, alias)
-			child.project = &discovery.Project{
-				Dir: ".",
-				Manifest: &manifest.Manifest{
-					Name: alias, Type: rt.Type,
-					Params: rt.Params, Environment: rt.Environment,
-				},
+			m, err := attachmentManifest(alias, rt)
+			if err != nil {
+				return err
 			}
+			child := getChild(repoNode, alias)
+			child.project = &discovery.Project{Dir: ".", Manifest: m}
 		}
 	}
 
@@ -170,12 +168,13 @@ func renderChildren(w io.Writer, parent *treeNode, prefix string) {
 	}
 }
 
-// annotation renders a project's parenthesized type annotation, with a
-// sorted, deduplicated "-> a, b" dependency suffix inside the parens when
+// annotation renders a project's parenthesized type annotation — every
+// declared type ref, comma-joined (one ref renders exactly as before) — with
+// a sorted, deduplicated "-> a, b" dependency suffix inside the parens when
 // the project has dependencies. The annotation uses the ASCII arrow; the
 // --show-deps footer keeps its own arrow.
 func annotation(m *manifest.Manifest) string {
-	inner := m.Type
+	inner := m.Types.String()
 	if deps := depNames(m); len(deps) > 0 {
 		inner += " -> " + strings.Join(deps, ", ")
 	}

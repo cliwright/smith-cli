@@ -286,11 +286,12 @@ func resolveRefs(repoRoot string, cfg *config.RepoConfig, args []string) ([]type
 			return nil, err
 		}
 		for _, p := range projects {
-			ref, err := typeref.Parse(p.Manifest.Type)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", filepath.ToSlash(filepath.Join(p.Dir, "smith.yml")), err)
+			// Every ref a manifest lists joins the fetch set; a ref that
+			// failed to parse already failed discovery with the smith.yml
+			// path attached.
+			for _, ref := range p.Manifest.Types {
+				add(ref)
 			}
-			add(ref)
 		}
 		// Attachments (repo-level targets) join the fetch set; their custody
 		// through the lock is identical to manifest-referenced types.

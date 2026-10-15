@@ -3,16 +3,19 @@
 // Like package config it preserves comments across Load/Save via the
 // yaml.Node tree. depends_on accepts two forms in one list: a bare project
 // name (sugar: dep's "build" before this project's "build") or a mapping
-// with project, targets and before keys (both default to [build]).
+// with project, targets and before keys (both default to [build]). type
+// accepts one ref as a bare string (sugar) or several as a list.
 package manifest
 
 import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/cliwright/smith/internal/typeref"
 	"github.com/cliwright/smith/internal/validate"
 )
 
@@ -24,7 +27,7 @@ const defaultTarget = "build"
 type Manifest struct {
 	Version   int               `json:"version" yaml:"version"`
 	Name      string            `json:"name" yaml:"name"`
-	Type      string            `json:"type" yaml:"type"`
+	Types     TypeRefs          `json:"type" yaml:"type"`
 	DependsOn []Dependency      `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 	Params    map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
 	// Environment extras for this project's target steps; values are Go
@@ -112,6 +115,69 @@ func (d Dependency) isSugar() bool {
 
 func isDefaultTargets(ts []string) bool {
 	return len(ts) == 0 || (len(ts) == 1 && ts[0] == defaultTarget)
+}
+
+// TypeRefs is the manifest's type field: the project-type ref(s) a project
+// is built from. The sugar scalar form ("type: python/astral/lib@1") and the
+// array form both decode into this slice, each entry parsed by typeref.Parse
+// so a bad ref errors with the smith.yml path (via Load). A single ref
+// marshals back as the scalar form, so a loaded manifest normalizes the
+// one-element array to sugar on Save; several refs marshal as a sequence.
+type TypeRefs []typeref.TypeRef
+
+// UnmarshalYAML accepts either one type-ref scalar or a sequence of refs.
+func (r *TypeRefs) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		if value.Tag != "!!str" {
+			return fmt.Errorf("type must be a type ref or a list of type refs, got %s", value.ShortTag())
+		}
+		ref, err := typeref.Parse(value.Value)
+		if err != nil {
+			return err
+		}
+		*r = TypeRefs{ref}
+		return nil
+	case yaml.SequenceNode:
+		refs := make(TypeRefs, 0, len(value.Content))
+		for _, item := range value.Content {
+			if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
+				return fmt.Errorf("type entries must be type ref strings, got %s", item.ShortTag())
+			}
+			ref, err := typeref.Parse(item.Value)
+			if err != nil {
+				return err
+			}
+			refs = append(refs, ref)
+		}
+		*r = refs
+		return nil
+	default:
+		return fmt.Errorf("type must be a type ref or a list of type refs, got %s", value.ShortTag())
+	}
+}
+
+// MarshalYAML emits the sugar scalar form for a single ref and a sequence
+// for several.
+func (r TypeRefs) MarshalYAML() (any, error) {
+	if len(r) == 1 {
+		return r[0].String(), nil
+	}
+	refs := make([]string, len(r))
+	for i, ref := range r {
+		refs[i] = ref.String()
+	}
+	return refs, nil
+}
+
+// String joins the refs as "name@version", comma-separated, in declaration
+// order.
+func (r TypeRefs) String() string {
+	parts := make([]string, len(r))
+	for i, ref := range r {
+		parts[i] = ref.String()
+	}
+	return strings.Join(parts, ", ")
 }
 
 // Load reads path, parses it, validates it against the embedded

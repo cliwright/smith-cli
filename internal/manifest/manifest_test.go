@@ -27,8 +27,8 @@ func TestLoad(t *testing.T) {
 				if m.Name != "payments" {
 					t.Errorf("Name = %q, want %q", m.Name, "payments")
 				}
-				if m.Type != "python/astral/service@2" {
-					t.Errorf("Type = %q, want %q", m.Type, "python/astral/service@2")
+				if got := m.Types.String(); got != "python/astral/service@2" {
+					t.Errorf("Types = %q, want %q", got, "python/astral/service@2")
 				}
 				if len(m.DependsOn) != 3 {
 					t.Fatalf("len(DependsOn) = %d, want 3", len(m.DependsOn))
@@ -107,6 +107,26 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			name: "working_dir outside the two legal values",
 			yaml: valid + "working_dir: wherever\n",
 			want: "working_dir",
+		},
+		{
+			name: "type array with a bad entry",
+			yaml: "version: 1\nname: demo\ntype: [python/astral/lib@1, mock/lib]\n",
+			want: "mock/lib",
+		},
+		{
+			name: "type array entry must be a string",
+			yaml: "version: 1\nname: demo\ntype: [3]\n",
+			want: "type",
+		},
+		{
+			name: "type array must not be empty",
+			yaml: "version: 1\nname: demo\ntype: []\n",
+			want: "type",
+		},
+		{
+			name: "type array must not repeat a ref",
+			yaml: "version: 1\nname: demo\ntype: [python/astral/lib@1, python/astral/lib@1]\n",
+			want: "type",
 		},
 	}
 	for _, tt := range tests {
@@ -259,4 +279,101 @@ func lookupEntry(n *yaml.Node, key string) (k, v *yaml.Node) {
 		}
 	}
 	return nil, nil
+}
+
+// TestLoadTypeArray covers the multi-type form: an array of refs loads in
+// declaration order, and the sugar string form still loads.
+func TestLoadTypeArray(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string // Types.String()
+	}{
+		{
+			name: "sugar string form",
+			yaml: "version: 1\nname: demo\ntype: python/astral/lib@1\n",
+			want: "python/astral/lib@1",
+		},
+		{
+			name: "array form",
+			yaml: "version: 1\nname: demo\ntype: [python/astral/lib@1, tofu/std/module@2]\n",
+			want: "python/astral/lib@1, tofu/std/module@2",
+		},
+		{
+			name: "one-element array",
+			yaml: "version: 1\nname: demo\ntype:\n  - python/astral/lib@1\n",
+			want: "python/astral/lib@1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "smith.yml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			m, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := m.Types.String(); got != tt.want {
+				t.Errorf("Types = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSaveTypeArrayRoundTrip: a loaded multi-type manifest saves back as a
+// sequence, keeps its comments, and reloads identically. A one-element array
+// is sugar: it saves as the bare scalar form (intended normalization).
+func TestSaveTypeArrayRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		wantType string // substring the saved type field must render as
+	}{
+		{
+			name: "multi-element array stays a sequence",
+			yaml: "# head comment\nversion: 1\nname: demo\n# type comment\ntype: [python/astral/lib@1, tofu/std/module@2]\n",
+			// The saved form is a block sequence; the exact layout is yaml.v3's.
+			wantType: "- python/astral/lib@1",
+		},
+		{
+			name:     "one-element array normalizes to the scalar sugar form",
+			yaml:     "version: 1\nname: demo\n# type comment\ntype:\n  - python/astral/lib@1\n",
+			wantType: "type: python/astral/lib@1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "smith.yml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			m, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			saved := filepath.Join(t.TempDir(), "smith.yml")
+			if err := Save(saved, m); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			data, err := os.ReadFile(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), tt.wantType) {
+				t.Errorf("saved file missing %q:\n%s", tt.wantType, data)
+			}
+			if !strings.Contains(string(data), "# type comment") {
+				t.Errorf("saved file lost the type comment:\n%s", data)
+			}
+			reloaded, err := Load(saved)
+			if err != nil {
+				t.Fatalf("reloading saved file: %v", err)
+			}
+			if got, want := reloaded.Types.String(), m.Types.String(); got != want {
+				t.Errorf("reloaded Types = %q, want %q", got, want)
+			}
+		})
+	}
 }

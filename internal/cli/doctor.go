@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/manifest"
 )
 
 // errUnhealthy makes the doctor command exit non-zero without cobra printing
@@ -59,13 +60,15 @@ func runDoctor(cmd *cobra.Command) error {
 	var warnings []string
 
 	collect := func(label string, p discovery.Project) {
-		t, err := rc.typeFor(p)
+		rt, err := rc.typeFor(p)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("cannot check tools for %s (type %s): run smith sync", label, p.Manifest.Type))
+			warnings = append(warnings, fmt.Sprintf("cannot check tools for %s (%s): run smith sync", label, refsLabel(p.Manifest.Types)))
 			return
 		}
-		for _, tool := range t.Tools {
-			addNeeder(needers, tool, label)
+		for _, t := range rt.Types {
+			for _, tool := range t.Tools {
+				addNeeder(needers, tool, label)
+			}
 		}
 	}
 
@@ -75,11 +78,24 @@ func runDoctor(cmd *cobra.Command) error {
 	for _, p := range rc.projects {
 		collect(p.Manifest.Name, p)
 	}
-	for _, a := range rc.attachments() {
+	attachments, err := rc.attachments()
+	if err != nil {
+		return err
+	}
+	for _, a := range attachments {
 		collect("repo:"+a.Manifest.Name, a)
 	}
 
 	return reportDoctor(out, needers, warnings)
+}
+
+// refsLabel names manifest type refs for messages: "type a@1" for one ref,
+// "types a@1, b@2" for several.
+func refsLabel(refs manifest.TypeRefs) string {
+	if len(refs) == 1 {
+		return "type " + refs.String()
+	}
+	return "types " + refs.String()
 }
 
 // toolNeeder is one consumer of a tool: a project name, "repo", or

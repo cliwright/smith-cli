@@ -932,3 +932,49 @@ func TestRegistryBasesResolvesRelativePathsAgainstRepoRoot(t *testing.T) {
 		t.Errorf("git registry = %+v, want HTTP base only", bases[2])
 	}
 }
+
+// TestSyncFetchesMultiTypeManifestRefs: a manifest listing several type refs
+// (array form) puts every ref in the fetch set — each is installed and
+// pinned exactly as a single-type manifest's ref is.
+func TestSyncFetchesMultiTypeManifestRefs(t *testing.T) {
+	const docsTypeContent = `{"name":"mock/std/docs","version":1,"description":"docs builder","tools":["sh"],"targets":{"docs":["mkdocs build"]}}`
+	f := newFakeRegistries(t)
+	f.serveType(t, "cliwright/types", "python/astral/lib", 1, testTypeContent)
+	f.serveType(t, "cliwright/types", "mock/std/docs", 1, docsTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, testRegs, nil)
+	alpha := filepath.Join(repo, "libs", "alpha")
+	if err := os.MkdirAll(alpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	multi := "version: 1\nname: alpha\ntype: [python/astral/lib@1, mock/std/docs@1]\n"
+	if err := os.WriteFile(filepath.Join(alpha, "smith.yml"), []byte(multi), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	out, err := run(t, "sync")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatalf("lock.Load: %v", err)
+	}
+	for _, ref := range []string{"python/astral/lib@1", "mock/std/docs@1"} {
+		if _, ok := lk.Types[ref]; !ok {
+			t.Errorf("lock missing pin for %s", ref)
+		}
+	}
+	for _, dir := range []string{"python/astral/lib@v1", "mock/std/docs@v1"} {
+		if _, err := os.Stat(filepath.Join(repo, ".smith", "types", filepath.FromSlash(dir), "project-type.json")); err != nil {
+			t.Errorf("installed type missing: %s (%v)", dir, err)
+		}
+	}
+	if !strings.Contains(out, "mock/std/docs@1: fetched from cliwright") {
+		t.Errorf("sync output missing the second ref's fetch line:\n%s", out)
+	}
+}

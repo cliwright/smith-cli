@@ -255,3 +255,114 @@ func TestRepoAttachmentHelp(t *testing.T) {
 		t.Errorf("attachment target help missing generated content:\n%s", out)
 	}
 }
+
+// multiTypeHelpFixture builds a repo whose alpha project composes two types:
+// lib (build target, config_path param, help files) and docs (docs target,
+// output_dir param, its own help files).
+func multiTypeHelpFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo,
+		map[string]manifestSpec{
+			"libs/alpha": {
+				name:   "alpha",
+				types:  []string{"mock/std/lib@1", "mock/std/docs@1"},
+				params: map[string]string{"config_path": "ci/pyproject.toml"},
+			},
+		},
+		map[string]typeSpec{
+			"mock/std/lib@1": {
+				targets: map[string][]string{
+					"build": {"uv build --config '{{.config_path}}'"},
+				},
+				env: map[string]string{"PYTHONUNBUFFERED": "1"},
+				params: map[string]projecttype.Param{
+					"config_path": {Default: "pyproject.toml", Description: "build config location"},
+				},
+				files: map[string]string{
+					"help/project.md": "# Lib prose\n\nLib project help.\n",
+					"help/build.md":   "Build prose.\n",
+				},
+			},
+			"mock/std/docs@1": {
+				targets: map[string][]string{
+					"docs": {"mkdocs build -d '{{.output_dir}}'"},
+				},
+				params: map[string]projecttype.Param{
+					"output_dir": {Default: "site", Description: "docs output dir"},
+				},
+				files: map[string]string{
+					"help/project.md": "# Docs prose\n\nDocs project help.\n",
+					"help/docs.md":    "Docs prose.\n",
+				},
+			},
+		})
+	return repo
+}
+
+func TestNsTypeHelpMultiTypeComposesBlocks(t *testing.T) {
+	repo := multiTypeHelpFixture(t)
+	t.Chdir(repo)
+	plainDisplay(t)
+
+	out, err := run(t, "libs", "alpha", "help")
+	if err != nil {
+		t.Fatalf("libs alpha help: %v\noutput:\n%s", err, out)
+	}
+	libDir := filepath.Join(repo, ".smith", "types", "mock", "std", "lib@v1")
+	docsDir := filepath.Join(repo, ".smith", "types", "mock", "std", "docs@v1")
+	for _, want := range []string{
+		"# alpha (type mock/std/lib@1)",
+		"| `config_path` | ci/pyproject.toml — build config location |",
+		"| `SMITH_TYPE_DIR` | " + libDir + " |",
+		"# Lib prose",
+		"\n---\n\n# alpha (type mock/std/docs@1)",
+		"| `output_dir` | site — docs output dir |",
+		"| `SMITH_TYPE_DIR` | " + docsDir + " |",
+		"# Docs prose",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("multi-type help missing %q:\n%s", want, out)
+		}
+	}
+	// Each block shows only ITS params (disjoint by composition).
+	libBlock := strings.Split(out, "# alpha (type mock/std/docs@1)")[0]
+	if strings.Contains(libBlock, "output_dir") {
+		t.Errorf("lib block leaks the docs param:\n%s", libBlock)
+	}
+}
+
+func TestNsTargetHelpMultiTypeNamesOwningRef(t *testing.T) {
+	repo := multiTypeHelpFixture(t)
+	t.Chdir(repo)
+	plainDisplay(t)
+
+	// docs belongs to the second type: the header names its ref and the
+	// right help file ships.
+	out, err := run(t, "libs", "alpha", "docs", "help")
+	if err != nil {
+		t.Fatalf("libs alpha docs help: %v\noutput:\n%s", err, out)
+	}
+	for _, want := range []string{
+		"# alpha:docs (type mock/std/docs@1)",
+		"```sh\nmkdocs build -d 'site'\n```",
+		"- `output_dir` = site",
+		"Docs prose.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("multi-type target help missing %q:\n%s", want, out)
+		}
+	}
+
+	// Single-type projects keep the plain header.
+	repo2 := helpFixture(t)
+	t.Chdir(repo2)
+	plainDisplay(t)
+	out, err = run(t, "libs", "alpha", "build", "help")
+	if err != nil {
+		t.Fatalf("single-type build help: %v", err)
+	}
+	if !strings.Contains(out, "# alpha:build\n") {
+		t.Errorf("single-type target help header changed:\n%s", out)
+	}
+}

@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"github.com/cliwright/smith/internal/discovery"
+	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/manifest"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/runner"
+	"github.com/cliwright/smith/internal/typeref"
 )
 
 type recordedRun struct {
@@ -36,10 +38,57 @@ func (f *fakeRunner) Run(_ context.Context, opts runner.Options, _ string, args 
 	return nil
 }
 
+// mustRefs parses one fixture ref string into TypeRefs; the fixture strings
+// are constants, so a parse failure is a programmer error.
+func mustRefs(s string) manifest.TypeRefs {
+	ref, err := typeref.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return manifest.TypeRefs{ref}
+}
+
+// resolvedOfE wraps fixture types in a Resolved the way cli.typeFor builds
+// one: composition owner indexes plus canonical installed dirs under
+// typesRoot. Composition failures surface as an error (a fixture with
+// deliberately conflicting types can exercise them through Build).
+func resolvedOfE(typesRoot string, ts ...*projecttype.ProjectType) (*Resolved, error) {
+	byTarget, byParam, err := projecttype.Compose(ts)
+	if err != nil {
+		return nil, err
+	}
+	rt := &Resolved{Types: ts, ByTarget: byTarget, ByParam: byParam, Dirs: map[string]string{}}
+	for _, t := range ts {
+		rt.Dirs[ref(t)] = filepath.Join(typesRoot, ingot.RefName(t.Name, t.Version))
+	}
+	return rt, nil
+}
+
+// resolvedOf is resolvedOfE for well-formed fixtures: a composition failure
+// is a programmer error and panics.
+func resolvedOf(typesRoot string, ts ...*projecttype.ProjectType) *Resolved {
+	rt, err := resolvedOfE(typesRoot, ts...)
+	if err != nil {
+		panic(err)
+	}
+	return rt
+}
+
 func mkProject(dir, name, typ string, deps ...manifest.Dependency) discovery.Project {
 	return discovery.Project{
 		Dir:      dir,
-		Manifest: &manifest.Manifest{Name: name, Type: typ, DependsOn: deps},
+		Manifest: &manifest.Manifest{Name: name, Types: mustRefs(typ), DependsOn: deps},
+	}
+}
+
+func mkProjectTypes(dir, name string, refs []string, deps ...manifest.Dependency) discovery.Project {
+	types := make(manifest.TypeRefs, len(refs))
+	for i, s := range refs {
+		types[i] = mustRefs(s)[0]
+	}
+	return discovery.Project{
+		Dir:      dir,
+		Manifest: &manifest.Manifest{Name: name, Types: types, DependsOn: deps},
 	}
 }
 
@@ -47,7 +96,7 @@ func mkProjectFull(dir, name, typ string, params, env map[string]string, deps ..
 	return discovery.Project{
 		Dir: dir,
 		Manifest: &manifest.Manifest{
-			Name: name, Type: typ, DependsOn: deps,
+			Name: name, Types: mustRefs(typ), DependsOn: deps,
 			Params: params, Environment: env,
 		},
 	}
@@ -59,7 +108,7 @@ func mkType(targets map[string][]string, deps map[string][]string, wd projecttyp
 		typed[name] = projecttype.Target{Steps: steps}
 	}
 	return &projecttype.ProjectType{
-		Name:       "mock/lib",
+		Name:       "mock/std/lib",
 		Version:    1,
 		Targets:    typed,
 		DependsOn:  deps,
@@ -86,9 +135,9 @@ func stepsOf(runs []recordedRun) []string {
 
 func TestBuildClosureAndOrder(t *testing.T) {
 	projects := []discovery.Project{
-		mkProject("libs/alpha", "alpha", "mock/lib@1",
+		mkProject("libs/alpha", "alpha", "mock/std/lib@1",
 			manifest.Dependency{Project: "beta", Targets: []string{"build"}, Before: []string{"build"}}),
-		mkProject("libs/beta", "beta", "mock/lib@1"),
+		mkProject("libs/beta", "beta", "mock/std/lib@1"),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": mkType(
@@ -100,11 +149,13 @@ func TestBuildClosureAndOrder(t *testing.T) {
 			nil,
 			projecttype.WorkingDirProject),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
 	// Roots select only alpha:build; the closure pulls in alpha:test (type
 	// dep) and beta:build (cross-project dep) as prerequisites.
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -120,16 +171,18 @@ func TestBuildClosureAndOrder(t *testing.T) {
 
 func TestBuildDeduplicatesAcrossRoots(t *testing.T) {
 	projects := []discovery.Project{
-		mkProject("libs/alpha", "alpha", "mock/lib@1"),
-		mkProject("libs/beta", "beta", "mock/lib@1"),
+		mkProject("libs/alpha", "alpha", "mock/std/lib@1"),
+		mkProject("libs/beta", "beta", "mock/std/lib@1"),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": mkType(map[string][]string{"build": {"echo alpha-build"}}, nil, ""),
 		"beta":  mkType(map[string][]string{"build": {"echo beta-build"}}, nil, ""),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}, {"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}, {"alpha", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -144,17 +197,19 @@ func TestBuildDeduplicatesAcrossRoots(t *testing.T) {
 
 func TestBuildCrossNamespaceClosure(t *testing.T) {
 	projects := []discovery.Project{
-		mkProject("services/web", "web", "mock/lib@1",
+		mkProject("services/web", "web", "mock/std/lib@1",
 			manifest.Dependency{Project: "shared", Targets: []string{"build"}, Before: []string{"build"}}),
-		mkProject("libs/shared", "shared", "mock/lib@1"),
+		mkProject("libs/shared", "shared", "mock/std/lib@1"),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"web":    mkType(map[string][]string{"build": {"echo web-build"}}, nil, ""),
 		"shared": mkType(map[string][]string{"build": {"echo shared-build"}}, nil, ""),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"web", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"web", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -168,48 +223,57 @@ func TestBuildCrossNamespaceClosure(t *testing.T) {
 }
 
 func TestBuildCycleError(t *testing.T) {
-	projects := []discovery.Project{mkProject("libs/alpha", "alpha", "mock/lib@1")}
+	projects := []discovery.Project{mkProject("libs/alpha", "alpha", "mock/std/lib@1")}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": mkType(
 			map[string][]string{"build": {"echo b"}, "test": {"echo t"}},
 			map[string][]string{"build": {"test"}, "test": {"build"}},
 			""),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err == nil || !strings.Contains(err.Error(), "dependency cycle") ||
 		!strings.Contains(err.Error(), "alpha:build") || !strings.Contains(err.Error(), "alpha:test") {
 		t.Fatalf("Build error = %v, want cycle naming alpha:build/alpha:test", err)
 	}
 }
 
+// TestBuildDanglingTypeTarget: a type depends_on entry pointing at a target
+// the same type does not declare is a hard error — enforced at composition,
+// so it surfaces while the project's types resolve.
 func TestBuildDanglingTypeTarget(t *testing.T) {
-	projects := []discovery.Project{mkProject("libs/alpha", "alpha", "mock/lib@1")}
+	projects := []discovery.Project{mkProject("libs/alpha", "alpha", "mock/std/lib@1")}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": mkType(map[string][]string{"build": {"echo b"}}, map[string][]string{"build": {"nope"}}, ""),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOfE("/repo/.smith/types", types[p.Manifest.Name])
+	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
-	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "alpha") {
-		t.Fatalf("Build error = %v, want dangling target named with project and type", err)
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "depends_on must stay within one type") {
+		t.Fatalf("Build error = %v, want dangling type depends_on named", err)
 	}
 }
 
 func TestBuildDanglingManifestTarget(t *testing.T) {
 	projects := []discovery.Project{
-		mkProject("libs/alpha", "alpha", "mock/lib@1",
+		mkProject("libs/alpha", "alpha", "mock/std/lib@1",
 			manifest.Dependency{Project: "beta", Targets: []string{"nope"}, Before: []string{"build"}}),
-		mkProject("libs/beta", "beta", "mock/lib@1"),
+		mkProject("libs/beta", "beta", "mock/std/lib@1"),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": mkType(map[string][]string{"build": {"echo b"}}, nil, ""),
 		"beta":  mkType(map[string][]string{"build": {"echo bb"}}, nil, ""),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err == nil || !strings.Contains(err.Error(), `manifest of project "alpha" depends on "beta" with target "nope"`) {
 		t.Fatalf("Build error = %v, want manifest dangling-target error", err)
 	}
@@ -217,17 +281,19 @@ func TestBuildDanglingManifestTarget(t *testing.T) {
 
 func TestExecuteFailFast(t *testing.T) {
 	projects := []discovery.Project{
-		mkProject("libs/alpha", "alpha", "mock/lib@1",
+		mkProject("libs/alpha", "alpha", "mock/std/lib@1",
 			manifest.Dependency{Project: "beta", Targets: []string{"build"}, Before: []string{"build"}}),
-		mkProject("libs/beta", "beta", "mock/lib@1"),
+		mkProject("libs/beta", "beta", "mock/std/lib@1"),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": mkType(map[string][]string{"build": {"echo alpha-build"}}, nil, ""),
 		"beta":  mkType(map[string][]string{"build": {"echo beta-build", "exit 3"}, "test": {"echo beta-test"}}, nil, ""),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "test"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "test"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -245,16 +311,18 @@ func TestExecuteFailFast(t *testing.T) {
 
 func TestExecuteWorkingDir(t *testing.T) {
 	projects := []discovery.Project{
-		mkProject("libs/repojob", "repojob", "mock/lib@1"),
-		mkProject("libs/projjob", "projjob", "mock/lib@1"),
+		mkProject("libs/repojob", "repojob", "mock/std/lib@1"),
+		mkProject("libs/projjob", "projjob", "mock/std/lib@1"),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"repojob": mkType(map[string][]string{"build": {"echo r"}}, nil, projecttype.WorkingDirRepo),
 		"projjob": mkType(map[string][]string{"build": {"echo p"}}, nil, projecttype.WorkingDirProject),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"repojob", "build"}, {"projjob", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"repojob", "build"}, {"projjob", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -275,7 +343,7 @@ func TestExecuteWorkingDir(t *testing.T) {
 }
 
 func TestExecuteWorkingDirManifestOverridesType(t *testing.T) {
-	up, down := mkProject("libs/up", "up", "mock/lib@1"), mkProject("libs/down", "down", "mock/lib@1")
+	up, down := mkProject("libs/up", "up", "mock/std/lib@1"), mkProject("libs/down", "down", "mock/std/lib@1")
 	up.Manifest.WorkingDir = "repo"      // type says project, manifest says repo
 	down.Manifest.WorkingDir = "project" // type says repo, manifest says project
 	projects := []discovery.Project{up, down}
@@ -283,9 +351,11 @@ func TestExecuteWorkingDirManifestOverridesType(t *testing.T) {
 		"up":   mkType(map[string][]string{"build": {"echo up"}}, nil, projecttype.WorkingDirProject),
 		"down": mkType(map[string][]string{"build": {"echo down"}}, nil, projecttype.WorkingDirRepo),
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -307,42 +377,46 @@ func TestExecuteWorkingDirManifestOverridesType(t *testing.T) {
 
 func TestBuildRejectsUndeclaredManifestParam(t *testing.T) {
 	projects := []discovery.Project{
-		mkProjectFull("libs/alpha", "alpha", "mock/lib@1", map[string]string{"speed": "fast"}, nil),
+		mkProjectFull("libs/alpha", "alpha", "mock/std/lib@1", map[string]string{"speed": "fast"}, nil),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
 			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
-	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/lib@1) sets param "speed", which the type does not declare`) {
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/std/lib@1) sets param "speed", which the type does not declare`) {
 		t.Fatalf("Build error = %v, want undeclared-param error naming project, key, and type", err)
 	}
 }
 
 func TestExecuteRendersStepsWithOverrides(t *testing.T) {
 	projects := []discovery.Project{
-		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+		mkProjectFull("libs/alpha", "alpha", "mock/std/lib@1",
 			map[string]string{"greeting": "hi there"}, nil),
-		mkProject("libs/beta", "beta", "mock/lib@1"),
+		mkProject("libs/beta", "beta", "mock/std/lib@1"),
 	}
 	greetingType := func() *projecttype.ProjectType {
 		return &projecttype.ProjectType{
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"greeting": {Default: "hello"}},
 			Targets:    map[string]projecttype.Target{"build": {Steps: []string{`echo '{{.greeting}} world'`}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		}
 	}
 	types := map[string]*projecttype.ProjectType{"alpha": greetingType(), "beta": greetingType()}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -378,7 +452,7 @@ func TestExecuteEnvPrecedence(t *testing.T) {
 	t.Setenv("MOCK_LEVEL", "base")
 
 	projects := []discovery.Project{
-		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+		mkProjectFull("libs/alpha", "alpha", "mock/std/lib@1",
 			map[string]string{"config_path": "ci.toml"},
 			map[string]string{
 				"MOCK_LEVEL":    "manifest",
@@ -388,16 +462,18 @@ func TestExecuteEnvPrecedence(t *testing.T) {
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:      map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
 			Environment: map[string]string{"MOCK_LEVEL": "type", "TEMPLATE_VAR": "cfg={{.config_path}}"},
 			Targets:     typedTargets(map[string][]string{"build": {"echo ok"}}),
 			WorkingDir:  projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -434,13 +510,13 @@ func TestExecuteRealShellEnv(t *testing.T) {
 	markers := filepath.Join(dir, "markers")
 
 	projects := []discovery.Project{
-		mkProjectFull("proj", "alpha", "mock/lib@1",
+		mkProjectFull("proj", "alpha", "mock/std/lib@1",
 			map[string]string{"suffix": "ok"},
 			map[string]string{"EXTRA": "manifest-layer"}),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:      map[string]projecttype.Param{"suffix": {Default: "ok"}},
 			Environment: map[string]string{"EXTRA": "type-layer", "TEMPLATED": "cfg-{{.suffix}}"},
 			Targets: typedTargets(map[string][]string{
@@ -449,9 +525,11 @@ func TestExecuteRealShellEnv(t *testing.T) {
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -475,20 +553,22 @@ func TestExecuteRealShellEnv(t *testing.T) {
 // absolute repo root.
 func TestExecuteParamValueUsesComputedVars(t *testing.T) {
 	projects := []discovery.Project{
-		mkProjectFull("libs/deep/alpha", "alpha", "mock/lib@1",
+		mkProjectFull("libs/deep/alpha", "alpha", "mock/std/lib@1",
 			map[string]string{"config_path": "{{.SMITH_REPO_ROOT}}/pyproject.toml"}, nil),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
 			Targets:    typedTargets(map[string][]string{"build": {`cat '{{.config_path}}'`}, "info": {`echo {{.SMITH_PROJECT_DIR}}`}}),
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "info"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "info"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -505,21 +585,23 @@ func TestExecuteParamValueUsesComputedVars(t *testing.T) {
 
 func TestExecuteEnvUsesParamsAndComputedVars(t *testing.T) {
 	projects := []discovery.Project{
-		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+		mkProjectFull("libs/alpha", "alpha", "mock/std/lib@1",
 			map[string]string{"config_path": "ci.toml"},
 			map[string]string{"CTX": "cfg={{.config_path}} root={{.SMITH_REPO_ROOT}} proj={{.SMITH_PROJECT}}"}),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
 			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -535,12 +617,12 @@ func TestExecuteEnvUsesParamsAndComputedVars(t *testing.T) {
 
 func TestBuildPhaseARejectsParamReferencingParam(t *testing.T) {
 	projects := []discovery.Project{
-		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+		mkProjectFull("libs/alpha", "alpha", "mock/std/lib@1",
 			map[string]string{"config_path": "{{.base_dir}}/pyproject.toml", "base_dir": "."}, nil),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params: map[string]projecttype.Param{
 				"config_path": {Default: "pyproject.toml"},
 				"base_dir":    {Default: "."},
@@ -549,10 +631,12 @@ func TestBuildPhaseARejectsParamReferencingParam(t *testing.T) {
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
-	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/lib@1) param "config_path"`) ||
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/std/lib@1) param "config_path"`) ||
 		!strings.Contains(err.Error(), "param values may reference computed vars (SMITH_*) only, not other params") {
 		t.Fatalf("Build error = %v, want the param-references-param hard error", err)
 	}
@@ -560,20 +644,22 @@ func TestBuildPhaseARejectsParamReferencingParam(t *testing.T) {
 
 func TestBuildPhaseARejectsUnknownVar(t *testing.T) {
 	projects := []discovery.Project{
-		mkProjectFull("libs/alpha", "alpha", "mock/lib@1",
+		mkProjectFull("libs/alpha", "alpha", "mock/std/lib@1",
 			map[string]string{"config_path": "{{.SMITH_FOO}}/x"}, nil),
 	}
 	types := map[string]*projecttype.ProjectType{
 		"alpha": {
-			Name: "mock/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
 			Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
 			Targets:    map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "/repo/.smith/types")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
 	if err == nil || !strings.Contains(err.Error(), `param "config_path"`) ||
 		!strings.Contains(err.Error(), `unknown var "SMITH_FOO"`) {
 		t.Fatalf("Build error = %v, want the unknown-computed-var hard error", err)
@@ -588,7 +674,7 @@ func TestAttachmentClosureAndComputedVars(t *testing.T) {
 		Dir: ".",
 		Manifest: &manifest.Manifest{
 			Name:   "python",
-			Type:   "repo/uv/workspace@1",
+			Types:  mustRefs("repo/uv/workspace@1"),
 			Params: map[string]string{"extras": "{{.SMITH_PROJECT}}-extras"},
 		},
 	}
@@ -601,9 +687,11 @@ func TestAttachmentClosureAndComputedVars(t *testing.T) {
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo", "/repo/.smith/types")
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -633,7 +721,7 @@ func TestAttachmentRealShell(t *testing.T) {
 		Dir: ".",
 		Manifest: &manifest.Manifest{
 			Name:        "python",
-			Type:        "repo/uv/workspace@1",
+			Types:       mustRefs("repo/uv/workspace@1"),
 			Environment: map[string]string{"LAYER": "manifest"},
 		},
 	}
@@ -649,9 +737,11 @@ func TestAttachmentRealShell(t *testing.T) {
 			WorkingDir: projecttype.WorkingDirProject,
 		},
 	}
-	typeFor := func(p discovery.Project) (*projecttype.ProjectType, error) { return types[p.Manifest.Name], nil }
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
+	}
 
-	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir, dir+"/.smith/types")
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -665,5 +755,157 @@ func TestAttachmentRealShell(t *testing.T) {
 	want := fmt.Sprintf("python|%s|manifest\n", dir)
 	if string(data) != want {
 		t.Errorf("markers = %q, want %q", data, want)
+	}
+}
+
+// TestExecuteMultiTypeOwnerDirs: a project composed of two types runs targets
+// from both, and SMITH_TYPE_DIR (template var AND exported env) is the
+// OWNING type's installed dir per target.
+func TestExecuteMultiTypeOwnerDirs(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectTypes("libs/alpha", "alpha", []string{"mock/std/lib@1", "mock/std/docs@1"}),
+	}
+	typesRoot := "/repo/.smith/types"
+	buildType := &projecttype.ProjectType{
+		Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+		Targets: typedTargets(map[string][]string{
+			"build": {"echo build {{.SMITH_TYPE_DIR}}"},
+		}),
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	docsType := &projecttype.ProjectType{
+		Name: "mock/std/docs", Version: 1, Description: "x", Tools: []string{"sh"},
+		Targets: typedTargets(map[string][]string{
+			"docs": {"echo docs {{.SMITH_TYPE_DIR}}"},
+		}),
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf(typesRoot, buildType, docsType), nil
+	}
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "docs"}}, "/repo")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := &fakeRunner{}
+	if err := plan.Execute(context.Background(), f, "/repo", &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(f.runs) != 2 {
+		t.Fatalf("runs = %d, want 2", len(f.runs))
+	}
+	buildDir := filepath.Join(typesRoot, "mock", "std", "lib@v1")
+	docsDir := filepath.Join(typesRoot, "mock", "std", "docs@v1")
+	if got, want := f.runs[0].step, "echo build "+buildDir; got != want {
+		t.Errorf("build step = %q, want %q", got, want)
+	}
+	if got, want := f.runs[1].step, "echo docs "+docsDir; got != want {
+		t.Errorf("docs step = %q, want %q", got, want)
+	}
+	// The exported env matches the template var, per target.
+	if got, _ := lastEnvValue(f.runs[0].env, "SMITH_TYPE_DIR"); got != buildDir {
+		t.Errorf("build SMITH_TYPE_DIR = %q, want %q", got, buildDir)
+	}
+	if got, _ := lastEnvValue(f.runs[1].env, "SMITH_TYPE_DIR"); got != docsDir {
+		t.Errorf("docs SMITH_TYPE_DIR = %q, want %q", got, docsDir)
+	}
+}
+
+// TestResolveParamsOwnerDirPhaseA: a manifest param renders in phase A with
+// SMITH_TYPE_DIR bound to the OWNING type's installed dir, across a
+// multi-type project.
+func TestResolveParamsOwnerDirPhaseA(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectTypes("libs/alpha", "alpha", []string{"mock/std/lib@1", "mock/std/docs@1"}),
+	}
+	projects[0].Manifest.Params = map[string]string{
+		"config_path": "{{.SMITH_TYPE_DIR}}/pyproject.toml", // owned by lib
+		"output_dir":  "{{.SMITH_TYPE_DIR}}/site",           // owned by docs
+	}
+	libType := &projecttype.ProjectType{
+		Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+		Params:     map[string]projecttype.Param{"config_path": {Default: "pyproject.toml"}},
+		Targets:    typedTargets(map[string][]string{"build": {"echo b"}}),
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	docsType := &projecttype.ProjectType{
+		Name: "mock/std/docs", Version: 1, Description: "x", Tools: []string{"sh"},
+		Params:     map[string]projecttype.Param{"output_dir": {Default: "docs"}},
+		Targets:    typedTargets(map[string][]string{"docs": {"echo d"}}),
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", libType, docsType), nil
+	}
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	params := plan.params["alpha"]
+	if got, want := params["config_path"], "/repo/.smith/types/mock/std/lib@v1/pyproject.toml"; got != want {
+		t.Errorf("config_path = %q, want the lib type's dir (%q)", got, want)
+	}
+	if got, want := params["output_dir"], "/repo/.smith/types/mock/std/docs@v1/site"; got != want {
+		t.Errorf("output_dir = %q, want the docs type's dir (%q)", got, want)
+	}
+}
+
+// TestBuildMultiTypeTargetCollision: two types declaring the same target do
+// not compose; the collision surfaces while the project resolves.
+func TestBuildMultiTypeTargetCollision(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectTypes("libs/alpha", "alpha", []string{"mock/std/lib@1", "mock/std/other@1"}),
+	}
+	a := mkType(map[string][]string{"build": {"echo a"}}, nil, "")
+	b := mkType(map[string][]string{"build": {"echo b"}}, nil, "")
+	b.Name = "mock/std/other" // distinct name: the target collision is the conflict under test
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOfE("/repo/.smith/types", a, b)
+	}
+
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	if err == nil || !strings.Contains(err.Error(), `both declare target "build"`) {
+		t.Fatalf("Build error = %v, want the target-collision composition error", err)
+	}
+}
+
+// TestExecuteMultiTypeDependsOnWithinOwningType: in-project depends_on walks
+// the OWNING type's edges only; a docs target can prereq a lib target within
+// the same project when the owning type declares it.
+func TestExecuteMultiTypeDependsOnWithinOwningType(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectTypes("libs/alpha", "alpha", []string{"mock/std/lib@1", "mock/std/docs@1"}),
+	}
+	libType := &projecttype.ProjectType{
+		Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+		Targets: typedTargets(map[string][]string{
+			"build": {"echo lib-build"},
+			"test":  {"echo lib-test"},
+		}),
+		DependsOn:  map[string][]string{"build": {"test"}},
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	docsType := &projecttype.ProjectType{
+		Name: "mock/std/docs", Version: 1, Description: "x", Tools: []string{"sh"},
+		Targets:    typedTargets(map[string][]string{"docs": {"echo docs"}}),
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		return resolvedOf("/repo/.smith/types", libType, docsType), nil
+	}
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "docs"}}, "/repo")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := &fakeRunner{}
+	if err := plan.Execute(context.Background(), f, "/repo", &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := []string{"echo lib-test", "echo lib-build", "echo docs"}
+	if got := stepsOf(f.runs); !slices.Equal(got, want) {
+		t.Errorf("steps = %v, want %v (owning type's test before its build)", got, want)
 	}
 }

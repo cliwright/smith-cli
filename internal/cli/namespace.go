@@ -29,14 +29,14 @@ var nsExecRunner targetrun.Runner = runner.Default
 
 // repoContext is everything the namespace dispatcher needs from the
 // repository: config, discovered projects, services, and lazily resolved,
-// lock-verified project types.
+// lock-verified, composed project types.
 type repoContext struct {
 	repoRoot string
 	cfg      *config.RepoConfig
 	projects []discovery.Project // sorted by Dir
 	services []*service.Service  // sorted by name
 	lockFile *lock.Lock
-	types    map[string]*projecttype.ProjectType // by project name, resolved lazily
+	types    map[string]*targetrun.Resolved // by project name, resolved lazily
 }
 
 func loadRepoContext() (*repoContext, error) {
@@ -65,7 +65,7 @@ func loadRepoContext() (*repoContext, error) {
 		cfg:      cfg,
 		projects: projects,
 		services: services,
-		types:    map[string]*projecttype.ProjectType{},
+		types:    map[string]*targetrun.Resolved{},
 	}, nil
 }
 
@@ -112,39 +112,48 @@ func (rc *repoContext) lock() (*lock.Lock, error) {
 	return lk, nil
 }
 
-// typeFor returns the project type of a discovered project, verifying the
-// installed copy against the lock before use: the ingot must hash-match the
-// pin and the unpacked tree must match the ingot. Missing, unpinned, or
-// drifted types are hard errors pointing at smith sync.
-func (rc *repoContext) typeFor(p discovery.Project) (*projecttype.ProjectType, error) {
-	if t, ok := rc.types[p.Manifest.Name]; ok {
-		return t, nil
-	}
-	ref, err := typeref.Parse(p.Manifest.Type)
-	if err != nil {
-		return nil, err
+// typeFor returns the composed project types of a discovered project,
+// verifying each installed copy against the lock before use: the ingot must
+// hash-match the pin and the unpacked tree must match the ingot. Missing,
+// unpinned, or drifted types are hard errors pointing at smith sync; the
+// refs must compose (disjoint targets/params/environment, agreeing
+// working_dir, depends_on staying within each type) — a conflict is a hard
+// error naming the project and the types.
+func (rc *repoContext) typeFor(p discovery.Project) (*targetrun.Resolved, error) {
+	if rt, ok := rc.types[p.Manifest.Name]; ok {
+		return rt, nil
 	}
 	lk, err := rc.lock()
 	if err != nil {
 		return nil, err
 	}
-	pin, ok := lk.Types[ref.String()]
-	if !ok {
-		return nil, fmt.Errorf("type %s is not pinned in %s; run smith sync", ref, filepath.Join(cacheDirName, lockJSONName))
+	rt := &targetrun.Resolved{Dirs: map[string]string{}}
+	for _, ref := range p.Manifest.Types {
+		pin, ok := lk.Types[ref.String()]
+		if !ok {
+			return nil, fmt.Errorf("type %s is not pinned in %s; run smith sync", ref, filepath.Join(cacheDirName, lockJSONName))
+		}
+		dir := rc.installedPath(ref)
+		if _, err := os.Stat(dir); err != nil {
+			return nil, fmt.Errorf("installed type %s is missing (%s); run smith sync", ref, dir)
+		}
+		if err := ingot.VerifyInstalled(dir, pin.Hash); err != nil {
+			return nil, fmt.Errorf("type %s: %w", ref, err)
+		}
+		pt, err := projecttype.Load(filepath.Join(dir, "project-type.json"))
+		if err != nil {
+			return nil, fmt.Errorf("installed type %s: %w", ref, err)
+		}
+		rt.Types = append(rt.Types, pt)
+		rt.Dirs[ref.String()] = dir
 	}
-	dir := rc.installedPath(ref)
-	if _, err := os.Stat(dir); err != nil {
-		return nil, fmt.Errorf("installed type %s is missing (%s); run smith sync", ref, dir)
-	}
-	if err := ingot.VerifyInstalled(dir, pin.Hash); err != nil {
-		return nil, fmt.Errorf("type %s: %w", ref, err)
-	}
-	pt, err := projecttype.Load(filepath.Join(dir, "project-type.json"))
+	byTarget, byParam, err := projecttype.Compose(rt.Types)
 	if err != nil {
-		return nil, fmt.Errorf("installed type %s: %w", ref, err)
+		return nil, fmt.Errorf("project %q: %w", p.Manifest.Name, err)
 	}
-	rc.types[p.Manifest.Name] = pt
-	return pt, nil
+	rt.ByTarget, rt.ByParam = byTarget, byParam
+	rc.types[p.Manifest.Name] = rt
+	return rt, nil
 }
 
 // typesDir is the repo-local install root for fetched project types:
@@ -161,10 +170,10 @@ func (rc *repoContext) installedPath(ref typeref.TypeRef) string {
 	return filepath.Join(typesDir(rc.repoRoot), installRelDir(ref))
 }
 
-// typeDirFor returns the installed directory of a resolved type — the
-// SMITH_TYPE_DIR anchor for the projects on that type.
-func (rc *repoContext) typeDirFor(t *projecttype.ProjectType) string {
-	return rc.installedPath(typeref.TypeRef{Name: t.Name, Version: t.Version})
+// refOf is the canonical "name@version" key under which one resolved type's
+// installed directory lives in targetrun.Resolved.Dirs.
+func refOf(t *projecttype.ProjectType) string {
+	return typeref.TypeRef{Name: t.Name, Version: t.Version}.String()
 }
 
 // namespaces are the first path segments of the declared project_roots.
@@ -212,11 +221,28 @@ func projectNames(projects []discovery.Project) []string {
 	return names
 }
 
+// attachmentManifest builds the synthetic manifest for one repo_targets
+// alias: the repo root as its directory, the attachment type as its single
+// ref (attachments stay single-type by design). The repo-config schema
+// guarantees the type shape; a parse error is reported loudly anyway.
+func attachmentManifest(alias string, rt config.RepoTarget) (*manifest.Manifest, error) {
+	ref, err := typeref.Parse(rt.Type)
+	if err != nil {
+		return nil, fmt.Errorf("repo_targets.%s: %w", alias, err)
+	}
+	return &manifest.Manifest{
+		Name:        alias,
+		Types:       manifest.TypeRefs{ref},
+		Params:      rt.Params,
+		Environment: rt.Environment,
+	}, nil
+}
+
 // attachments models repo-level targets (repo_targets) as synthetic
 // projects: an in-memory manifest named by the alias with the repo root as
 // its directory, routed through the ordinary targetrun machinery. Sorted by
 // alias.
-func (rc *repoContext) attachments() []discovery.Project {
+func (rc *repoContext) attachments() ([]discovery.Project, error) {
 	aliases := make([]string, 0, len(rc.cfg.RepoTargets))
 	for alias := range rc.cfg.RepoTargets {
 		aliases = append(aliases, alias)
@@ -224,18 +250,13 @@ func (rc *repoContext) attachments() []discovery.Project {
 	sort.Strings(aliases)
 	out := make([]discovery.Project, 0, len(aliases))
 	for _, alias := range aliases {
-		rt := rc.cfg.RepoTargets[alias]
-		out = append(out, discovery.Project{
-			Dir: ".",
-			Manifest: &manifest.Manifest{
-				Name:        alias,
-				Type:        rt.Type,
-				Params:      rt.Params,
-				Environment: rt.Environment,
-			},
-		})
+		m, err := attachmentManifest(alias, rc.cfg.RepoTargets[alias])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, discovery.Project{Dir: ".", Manifest: m})
 	}
-	return out
+	return out, nil
 }
 
 // dispatchRepo handles "smith repo ..." — the synthetic namespace backed by
@@ -252,7 +273,10 @@ func (rc *repoContext) attachments() []discovery.Project {
 // an attachment here.
 func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	out := stdout(cmd)
-	attachments := rc.attachments()
+	attachments, err := rc.attachments()
+	if err != nil {
+		return err
+	}
 
 	if len(rest) == 0 || (rest[0] == "list" && len(rest) == 1) {
 		if len(attachments) == 0 {
@@ -299,13 +323,13 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := t.Targets[rest[1]]; !ok {
-		return fmt.Errorf("repo target %q (type %s@%d) has no target %q (targets: %s)",
-			att.Manifest.Name, t.Name, t.Version, rest[1], strings.Join(sortedKeys(t.Targets), ", "))
+	if _, ok := t.ByTarget[rest[1]]; !ok {
+		return fmt.Errorf("repo target %q (%s) has no target %q (targets: %s)",
+			att.Manifest.Name, t.TypeLabel(), rest[1], strings.Join(sortedKeys(t.ByTarget), ", "))
 	}
 	warnParallel(cmd)
 	plan, err := targetrun.Build([]discovery.Project{att}, rc.typeFor,
-		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot, typesDir(rc.repoRoot))
+		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot)
 	if err != nil {
 		return err
 	}
@@ -393,56 +417,68 @@ func unknownProjectError(ns, name string, nsProjects []discovery.Project) error 
 		name, ns, strings.Join(projectNames(nsProjects), ", "))
 }
 
-// listTargets prints the target names a project's type declares, annotated
+// listTargets prints the target names a project's types declare, annotated
 // with each target's short description when it carries one: names are padded
-// to a common column and described targets read "name -- description".
+// to a common column and described targets read "name -- description". A
+// single-type project lists flat; a multi-type project groups targets under
+// per-type "name@version" headings (blank-line separated), the padding rule
+// applied per section.
 func (rc *repoContext) listTargets(cmd *cobra.Command, p discovery.Project) error {
-	t, err := rc.typeFor(p)
+	rt, err := rc.typeFor(p)
 	if err != nil {
 		return err
 	}
-	targets := make([]string, 0, len(t.Targets))
-	for name := range t.Targets {
-		targets = append(targets, name)
-	}
-	sort.Strings(targets)
-	width := 0
-	for _, name := range targets {
-		if t.Targets[name].Description != "" && len(name) > width {
-			width = len(name)
-		}
-	}
 	out := stdout(cmd)
-	for _, name := range targets {
-		if desc := t.Targets[name].Description; desc != "" {
-			fmt.Fprintf(out, "%-*s -- %s\n", width, name, desc)
-		} else {
-			fmt.Fprintln(out, name)
+	listTypeTargets := func(t *projecttype.ProjectType) {
+		targets := sortedKeys(t.Targets)
+		width := 0
+		for _, name := range targets {
+			if t.Targets[name].Description != "" && len(name) > width {
+				width = len(name)
+			}
 		}
+		for _, name := range targets {
+			if desc := t.Targets[name].Description; desc != "" {
+				fmt.Fprintf(out, "%-*s -- %s\n", width, name, desc)
+			} else {
+				fmt.Fprintln(out, name)
+			}
+		}
+	}
+	if len(rt.Types) == 1 {
+		listTypeTargets(rt.Types[0])
+		return nil
+	}
+	for i, t := range rt.Types {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintf(out, "%s@%d\n\n", t.Name, t.Version)
+		listTypeTargets(t)
 	}
 	return nil
 }
 
 // runSingle runs one (project, target) pair. An unknown target is a hard
-// error listing what the type actually declares.
+// error listing what the project's types actually declare.
 func (rc *repoContext) runSingle(cmd *cobra.Command, p discovery.Project, target string) error {
-	t, err := rc.typeFor(p)
+	rt, err := rc.typeFor(p)
 	if err != nil {
 		return err
 	}
-	if _, ok := t.Targets[target]; !ok {
-		return fmt.Errorf("project %q (type %s@%d) has no target %q (targets: %s)",
-			p.Manifest.Name, t.Name, t.Version, target, strings.Join(sortedKeys(t.Targets), ", "))
+	if _, ok := rt.ByTarget[target]; !ok {
+		return fmt.Errorf("project %q (%s) has no target %q (targets: %s)",
+			p.Manifest.Name, rt.TypeLabel(), target, strings.Join(sortedKeys(rt.ByTarget), ", "))
 	}
 	warnParallel(cmd)
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot, typesDir(rc.repoRoot))
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot)
 	if err != nil {
 		return err
 	}
 	return rc.executePlan(cmd, plan)
 }
 
-// runTarget runs target across a scope of projects. Projects whose type does
+// runTarget runs target across a scope of projects. Projects whose types do
 // not declare the target are skipped and reported; if nothing can run, that
 // is an error.
 func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []discovery.Project, scope, ns string) error {
@@ -451,11 +487,11 @@ func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []d
 	var roots []targetrun.Node
 	skipped := 0
 	for _, p := range projects {
-		t, err := rc.typeFor(p)
+		rt, err := rc.typeFor(p)
 		if err != nil {
 			return err
 		}
-		if _, ok := t.Targets[target]; ok {
+		if _, ok := rt.ByTarget[target]; ok {
 			roots = append(roots, targetrun.Node{Project: p.Manifest.Name, Target: target})
 		} else {
 			skipped++
@@ -472,7 +508,7 @@ func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []d
 		return fmt.Errorf("no project in %s has a %q target%s", scope, target, hint)
 	}
 
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, typesDir(rc.repoRoot))
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
 	if err != nil {
 		return err
 	}

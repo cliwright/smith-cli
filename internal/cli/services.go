@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/service"
 	"github.com/cliwright/smith/internal/targetrun"
 )
@@ -109,8 +108,8 @@ func checkServiceTarget(target string) error {
 // serviceRoots resolves which (project, target) nodes implement service
 // target st. A component whose targets map any component target onto st
 // contributes the mapped component target(s); otherwise a component falls
-// back to a name match against its type's targets. Components that do
-// neither are returned separately for skip-and-report. Roots follow
+// back to a name match against its composed types' targets. Components that
+// do neither are returned separately for skip-and-report. Roots follow
 // component declaration order, mapped targets sorted within a component.
 func (rc *repoContext) serviceRoots(svc *service.Service, st string) (roots []targetrun.Node, skipped []string, err error) {
 	for _, c := range svc.Components {
@@ -118,7 +117,7 @@ func (rc *repoContext) serviceRoots(svc *service.Service, st string) (roots []ta
 		if !ok { // load-time validation guarantees this; stay loud anyway
 			return nil, nil, fmt.Errorf("service %q lists unknown component %q", svc.Name, c.Project)
 		}
-		t, err := rc.typeFor(p)
+		rt, err := rc.typeFor(p)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -135,7 +134,7 @@ func (rc *repoContext) serviceRoots(svc *service.Service, st string) (roots []ta
 			}
 			continue
 		}
-		if _, ok := t.Targets[st]; ok {
+		if _, ok := rt.ByTarget[st]; ok {
 			roots = append(roots, targetrun.Node{Project: c.Project, Target: st})
 			continue
 		}
@@ -161,7 +160,7 @@ func (rc *repoContext) runService(cmd *cobra.Command, svc *service.Service, targ
 			svc.Name, target, strings.Join(rc.implementedServiceTargets(svc), ", "))
 	}
 	warnParallel(cmd)
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, typesDir(rc.repoRoot))
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
 	if err != nil {
 		return err
 	}
@@ -202,7 +201,7 @@ func (rc *repoContext) implementedServiceTargets(svc *service.Service) []string 
 		if !ok {
 			continue
 		}
-		t, err := rc.typeFor(p)
+		rt, err := rc.typeFor(p)
 		if err != nil {
 			continue
 		}
@@ -210,7 +209,7 @@ func (rc *repoContext) implementedServiceTargets(svc *service.Service) []string 
 			if impl[st] {
 				continue
 			}
-			if _, ok := t.Targets[st]; ok {
+			if _, ok := rt.ByTarget[st]; ok {
 				impl[st] = true
 				continue
 			}
@@ -241,12 +240,12 @@ func (rc *repoContext) showService(cmd *cobra.Command, svc *service.Service) err
 		if !ok {
 			return fmt.Errorf("service %q lists unknown component %q", svc.Name, c.Project)
 		}
-		t, err := rc.typeFor(p)
+		rt, err := rc.typeFor(p)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "%s (%s@%d)\n", c.Project, t.Name, t.Version)
-		impl := componentTargetsDisplay(t, c)
+		fmt.Fprintf(out, "%s (%s)\n", c.Project, p.Manifest.Types.String())
+		impl := componentTargetsDisplay(rt, c)
 		if len(impl) == 0 {
 			fmt.Fprintln(out, "  targets: (none — participates via dependencies only)")
 			continue
@@ -259,10 +258,10 @@ func (rc *repoContext) showService(cmd *cobra.Command, svc *service.Service) err
 // componentTargetsDisplay lists the service targets a component implements,
 // in vocabulary order: a bare name for a name match (or an identity
 // mapping), "svc (target: ct)" for a renamed mapping.
-func componentTargetsDisplay(t *projecttype.ProjectType, c service.Component) []string {
+func componentTargetsDisplay(rt *targetrun.Resolved, c service.Component) []string {
 	var out []string
 	for _, st := range service.StandardTargets {
-		if _, ok := t.Targets[st]; ok {
+		if _, ok := rt.ByTarget[st]; ok {
 			out = append(out, st)
 			continue
 		}
@@ -389,7 +388,7 @@ func (rc *repoContext) graphServiceTarget(cmd *cobra.Command, svc *service.Servi
 		return fmt.Errorf("no component in service %q implements target %q (targets: %s)",
 			svc.Name, target, strings.Join(rc.implementedServiceTargets(svc), ", "))
 	}
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, typesDir(rc.repoRoot))
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
 	if err != nil {
 		return err
 	}

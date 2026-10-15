@@ -15,7 +15,6 @@ import (
 	"github.com/cliwright/smith/internal/discovery"
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/targetrun"
-	"github.com/cliwright/smith/internal/typeref"
 )
 
 // `help` is a reserved grammar keyword in two positions: `smith <ns> <name>
@@ -30,21 +29,19 @@ import (
 var lookPath = exec.LookPath
 
 // helpContext is everything needed to compose one help document: the
-// project, its custody-verified type, and the rendering context a real run
-// would use (merged params plus the computed vars).
+// project, its custody-verified composed types, the absolute repo root, and
+// the merged params a real run would use. Per-type blocks bind
+// SMITH_TYPE_DIR to that type's installed dir (the owning type's dir is what
+// a step would see).
 type helpContext struct {
-	project discovery.Project
-	typeDef *projecttype.ProjectType
-	typeDir string
-	vars    map[string]string // merged params + computed vars
+	project  discovery.Project
+	resolved *targetrun.Resolved
+	absRoot  string
+	params   map[string]string // merged params (all types, disjoint by composition)
 }
 
 func (rc *repoContext) helpContext(p discovery.Project) (*helpContext, error) {
-	t, err := rc.typeFor(p)
-	if err != nil {
-		return nil, err
-	}
-	ref, err := typeref.Parse(p.Manifest.Type)
+	rt, err := rc.typeFor(p)
 	if err != nil {
 		return nil, err
 	}
@@ -52,81 +49,108 @@ func (rc *repoContext) helpContext(p discovery.Project) (*helpContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
-	typeDir := rc.installedPath(ref)
-	params, err := targetrun.ResolveParams(absRoot, typeDir, p, t)
+	params, err := targetrun.ResolveParams(absRoot, p, rt)
 	if err != nil {
 		return nil, err
 	}
-	vars := targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name, typeDir)
-	for key, value := range params {
-		vars[key] = value
-	}
-	return &helpContext{project: p, typeDef: t, typeDir: typeDir, vars: vars}, nil
+	return &helpContext{project: p, resolved: rt, absRoot: absRoot, params: params}, nil
 }
 
-// showTypeHelp composes and displays the type-level help document:
-// identity, working_dir, template vars, environment, then the type's
-// help/project.md (a note replaces the file when the type ships none).
+// varsFor returns the rendering context of one type's block: the merged
+// params plus the computed vars with SMITH_TYPE_DIR bound to that type's
+// installed dir.
+func (hc *helpContext) varsFor(t *projecttype.ProjectType) map[string]string {
+	vars := targetrun.ComputedVars(hc.absRoot, hc.project.Dir, hc.project.Manifest.Name, hc.resolved.Dirs[refOf(t)])
+	for key, value := range hc.params {
+		vars[key] = value
+	}
+	return vars
+}
+
+// showTypeHelp composes and displays the type-level help document: one
+// generated block per type (identity, working_dir, tools, that type's params
+// in the vars table, that type's environment, then the type's
+// help/project.md — a note replaces the file when the type ships none),
+// blocks joined with "---". A single-type project renders exactly one block.
 func (rc *repoContext) showTypeHelp(cmd *cobra.Command, p discovery.Project) error {
 	hc, err := rc.helpContext(p)
 	if err != nil {
 		return err
 	}
-	t := hc.typeDef
 	var doc bytes.Buffer
-	fmt.Fprintf(&doc, "# %s (type %s@%d)\n\n", p.Manifest.Name, t.Name, t.Version)
+	for i, t := range hc.resolved.Types {
+		if i > 0 {
+			doc.WriteString("\n---\n\n")
+		}
+		hc.writeTypeBlock(&doc, t)
+	}
+	return displayMarkdown(cmd, doc.String())
+}
+
+// writeTypeBlock renders one type's generated summary and appends its
+// help/project.md.
+func (hc *helpContext) writeTypeBlock(doc *bytes.Buffer, t *projecttype.ProjectType) {
+	p := hc.project
+	vars := hc.varsFor(t)
+	fmt.Fprintf(doc, "# %s (type %s@%d)\n\n", p.Manifest.Name, t.Name, t.Version)
 	if t.Description != "" {
-		fmt.Fprintf(&doc, "%s\n\n", t.Description)
+		fmt.Fprintf(doc, "%s\n\n", t.Description)
 	}
 	workingDir := string(t.WorkingDir)
 	if t.WorkingDir == "" {
 		workingDir = string(projecttype.WorkingDirProject)
 	}
 	if m := p.Manifest.WorkingDir; m != "" {
-		fmt.Fprintf(&doc, "- working_dir: `%s` (manifest overrides the type's `%s`)\n", m, workingDir)
+		fmt.Fprintf(doc, "- working_dir: `%s` (manifest overrides the type's `%s`)\n", m, workingDir)
 	} else {
-		fmt.Fprintf(&doc, "- working_dir: `%s`\n", workingDir)
+		fmt.Fprintf(doc, "- working_dir: `%s`\n", workingDir)
 	}
-	fmt.Fprintf(&doc, "- tools: %s\n\n", strings.Join(t.Tools, ", "))
+	fmt.Fprintf(doc, "- tools: %s\n\n", strings.Join(t.Tools, ", "))
 
 	doc.WriteString("## Template vars\n\n")
-	doc.WriteString(markdownVarsTable(hc.vars, t))
+	doc.WriteString(markdownVarsTable(vars, t))
 
 	if len(t.Environment) > 0 {
 		doc.WriteString("\n## Environment\n\n```sh\n")
 		for _, key := range sortedStringKeys(t.Environment) {
-			value, err := projecttype.RenderTemplate(t.Environment[key], hc.vars)
+			value, err := projecttype.RenderTemplate(t.Environment[key], vars)
 			if err != nil {
 				value = t.Environment[key]
 			}
-			fmt.Fprintf(&doc, "%s=%s\n", key, value)
+			fmt.Fprintf(doc, "%s=%s\n", key, value)
 		}
 		doc.WriteString("```\n")
 	}
 
 	doc.WriteString("\n---\n\n")
-	doc.WriteString(hc.helpFile("project"))
-	return displayMarkdown(cmd, doc.String())
+	doc.WriteString(helpFile(hc.resolved.Dirs[refOf(t)], "project"))
 }
 
 // showTargetHelp composes and displays the target-level help document: the
 // target's rendered steps (the command that actually runs), the vars those
-// steps reference, then the type's help/<target>.md (a note replaces the
-// file when the type ships none).
+// steps reference, then the OWNING type's help/<target>.md (a note replaces
+// the file when the type ships none). The header names the owning type's ref
+// when the project composes several types.
 func (rc *repoContext) showTargetHelp(cmd *cobra.Command, p discovery.Project, targetName string) error {
 	hc, err := rc.helpContext(p)
 	if err != nil {
 		return err
 	}
-	t := hc.typeDef
-	target, ok := t.Targets[targetName]
+	rt := hc.resolved
+	owner, ok := rt.ByTarget[targetName]
 	if !ok {
-		return fmt.Errorf("project %q (type %s@%d) has no target %q (targets: %s)",
-			p.Manifest.Name, t.Name, t.Version, targetName, strings.Join(sortedKeys(t.Targets), ", "))
+		return fmt.Errorf("project %q (%s) has no target %q (targets: %s)",
+			p.Manifest.Name, rt.TypeLabel(), targetName, strings.Join(sortedKeys(rt.ByTarget), ", "))
 	}
+	target := owner.Targets[targetName]
+	vars := hc.varsFor(owner)
 
 	var doc bytes.Buffer
-	fmt.Fprintf(&doc, "# %s:%s\n\n", p.Manifest.Name, targetName)
+	fmt.Fprintf(&doc, "# %s:%s", p.Manifest.Name, targetName)
+	if len(rt.Types) > 1 {
+		fmt.Fprintf(&doc, " (type %s@%d)", owner.Name, owner.Version)
+	}
+	doc.WriteString("\n\n")
 	if target.Description != "" {
 		fmt.Fprintf(&doc, "%s\n\n", target.Description)
 	}
@@ -137,7 +161,7 @@ func (rc *repoContext) showTargetHelp(cmd *cobra.Command, p discovery.Project, t
 		for _, name := range templateRefs(step) {
 			referenced[name] = true
 		}
-		rendered, err := projecttype.RenderTemplate(step, hc.vars)
+		rendered, err := projecttype.RenderTemplate(step, vars)
 		if err != nil {
 			return fmt.Errorf("project %q target %q: rendering step: %w", p.Manifest.Name, targetName, err)
 		}
@@ -153,7 +177,7 @@ func (rc *repoContext) showTargetHelp(cmd *cobra.Command, p discovery.Project, t
 	if len(used) > 0 {
 		doc.WriteString("\n## Vars used\n\n")
 		for _, name := range used {
-			value, ok := hc.vars[name]
+			value, ok := vars[name]
 			if !ok {
 				value = "<unset>"
 			}
@@ -162,15 +186,15 @@ func (rc *repoContext) showTargetHelp(cmd *cobra.Command, p discovery.Project, t
 	}
 
 	doc.WriteString("\n---\n\n")
-	doc.WriteString(hc.helpFile(targetName))
+	doc.WriteString(helpFile(rt.Dirs[refOf(owner)], targetName))
 	return displayMarkdown(cmd, doc.String())
 }
 
 // helpFile returns the contents of one help/<name>.md shipped inside the
-// installed type, or a note when the type carries no such file — the
-// generated content above always stands alone.
-func (hc *helpContext) helpFile(name string) string {
-	path := filepath.Join(hc.typeDir, "help", name+".md")
+// installed type directory typeDir, or a note when the type carries no such
+// file — the generated content above always stands alone.
+func helpFile(typeDir, name string) string {
+	path := filepath.Join(typeDir, "help", name+".md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Sprintf("_This type ships no help/%s.md — the summary above is the help._\n", name)

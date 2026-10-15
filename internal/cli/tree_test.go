@@ -11,12 +11,23 @@ import (
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/discovery"
 	"github.com/cliwright/smith/internal/manifest"
+	"github.com/cliwright/smith/internal/typeref"
 )
+
+// mustRefs parses one fixture ref string into manifest.TypeRefs; the fixture
+// strings are constants, so a parse failure is a programmer error.
+func mustRefs(s string) manifest.TypeRefs {
+	ref, err := typeref.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return manifest.TypeRefs{ref}
+}
 
 func project(dir, name, typ string) discovery.Project {
 	return discovery.Project{
 		Dir:      dir,
-		Manifest: &manifest.Manifest{Name: name, Type: typ},
+		Manifest: &manifest.Manifest{Name: name, Types: mustRefs(typ)},
 	}
 }
 
@@ -34,7 +45,7 @@ func projectWithDeps(dir, name, typ string, deps ...string) discovery.Project {
 	}
 	return discovery.Project{
 		Dir:      dir,
-		Manifest: &manifest.Manifest{Name: name, Type: typ, DependsOn: dependsOn},
+		Manifest: &manifest.Manifest{Name: name, Types: mustRefs(typ), DependsOn: dependsOn},
 	}
 }
 
@@ -76,8 +87,8 @@ func TestRenderTreeDependencies(t *testing.T) {
 	spam := discovery.Project{
 		Dir: "libs/spam",
 		Manifest: &manifest.Manifest{
-			Name: "spam",
-			Type: "python/astral/service@2",
+			Name:  "spam",
+			Types: mustRefs("python/astral/service@2"),
 			DependsOn: []manifest.Dependency{
 				{Project: "foobar", Targets: []string{"build"}, Before: []string{"build"}},
 				{Project: "foobar", Targets: []string{"test"}, Before: []string{"build"}},
@@ -440,4 +451,38 @@ func TestOutputChannels(t *testing.T) {
 			t.Errorf("stdout = %q, want empty on failure", so.String())
 		}
 	})
+}
+
+// TestRenderTreeMultiTypeAnnotation: a project listing several type refs
+// annotates with every ref, comma-joined; a single ref renders exactly as
+// before (no join noise).
+func TestRenderTreeMultiTypeAnnotation(t *testing.T) {
+	cfg := &config.RepoConfig{
+		Workspace: config.Workspace{ProjectRoots: []string{"libs"}},
+	}
+	multi := discovery.Project{
+		Dir: "libs/stacked",
+		Manifest: &manifest.Manifest{
+			Name:  "stacked",
+			Types: append(mustRefs("python/astral/lib@1"), mustRefs("tofu/std/module@1")...),
+		},
+	}
+	projects := []discovery.Project{
+		project("libs/plain", "plain", "python/astral/lib@1"),
+		multi,
+	}
+
+	var buf bytes.Buffer
+	if err := renderTree(&buf, "demo", cfg, projects); err != nil {
+		t.Fatalf("renderTree: %v", err)
+	}
+
+	want := `demo
+└── libs
+    ├── plain     (python/astral/lib@1)
+    └── stacked   (python/astral/lib@1, tofu/std/module@1)
+`
+	if buf.String() != want {
+		t.Errorf("renderTree output mismatch:\n%s\nwant:\n%s", buf.String(), want)
+	}
 }

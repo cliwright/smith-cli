@@ -123,13 +123,13 @@ func (rc *repoContext) dispatchNamespaceContext(cmd *cobra.Command, ns string, r
 	if p, isProject := projectByName(nsProjects, rest[0]); isProject {
 		target := ""
 		if len(rest) == 2 {
-			t, err := rc.typeFor(p)
+			rt, err := rc.typeFor(p)
 			if err != nil {
 				return err
 			}
-			if _, ok := t.Targets[rest[1]]; !ok {
-				return fmt.Errorf("project %q (type %s@%d) has no target %q (targets: %s)",
-					p.Manifest.Name, t.Name, t.Version, rest[1], strings.Join(sortedKeys(t.Targets), ", "))
+			if _, ok := rt.ByTarget[rest[1]]; !ok {
+				return fmt.Errorf("project %q (%s) has no target %q (targets: %s)",
+					p.Manifest.Name, rt.TypeLabel(), rest[1], strings.Join(sortedKeys(rt.ByTarget), ", "))
 			}
 			target = rest[1]
 		}
@@ -145,7 +145,10 @@ func (rc *repoContext) dispatchNamespaceContext(cmd *cobra.Command, ns string, r
 // attachment's resolved environment (repo-level dotenv applies; attachments
 // have no project-level dotenv of their own).
 func (rc *repoContext) dispatchRepoContext(cmd *cobra.Command, rest []string) error {
-	attachments := rc.attachments()
+	attachments, err := rc.attachments()
+	if err != nil {
+		return err
+	}
 	if len(rest) == 0 || rest[0] == "list" {
 		return fmt.Errorf("smith repo --context needs an attachment (e.g. \"smith repo <name> --context\")")
 	}
@@ -163,13 +166,13 @@ func (rc *repoContext) dispatchRepoContext(cmd *cobra.Command, rest []string) er
 	}
 	target := ""
 	if len(rest) == 2 {
-		t, err := rc.typeFor(att)
+		rt, err := rc.typeFor(att)
 		if err != nil {
 			return err
 		}
-		if _, ok := t.Targets[rest[1]]; !ok {
-			return fmt.Errorf("repo target %q (type %s@%d) has no target %q (targets: %s)",
-				att.Manifest.Name, t.Name, t.Version, rest[1], strings.Join(sortedKeys(t.Targets), ", "))
+		if _, ok := rt.ByTarget[rest[1]]; !ok {
+			return fmt.Errorf("repo target %q (%s) has no target %q (targets: %s)",
+				att.Manifest.Name, rt.TypeLabel(), rest[1], strings.Join(sortedKeys(rt.ByTarget), ", "))
 		}
 		target = rest[1]
 	}
@@ -181,11 +184,11 @@ func (rc *repoContext) dispatchRepoContext(cmd *cobra.Command, rest []string) er
 func (rc *repoContext) printTargetContext(cmd *cobra.Command, target string, projects []discovery.Project, scope string) error {
 	var declared []discovery.Project
 	for _, p := range projects {
-		t, err := rc.typeFor(p)
+		rt, err := rc.typeFor(p)
 		if err != nil {
 			return err
 		}
-		if _, ok := t.Targets[target]; ok {
+		if _, ok := rt.ByTarget[target]; ok {
 			declared = append(declared, p)
 		}
 	}
@@ -204,7 +207,8 @@ func (rc *repoContext) printTargetContext(cmd *cobra.Command, target string, pro
 }
 
 // printProjectContext prints one project's annotated effective environment;
-// with header, prefixed by "# <name> (<type>)" for multi-project views.
+// with header, prefixed by "# <name> (<refs>)" — every declared type ref,
+// comma-joined — for multi-project views.
 func (rc *repoContext) printProjectContext(cmd *cobra.Command, p discovery.Project, target string, header bool) error {
 	entries, err := rc.projectEnvEntries(cmd, p, target)
 	if err != nil {
@@ -212,28 +216,26 @@ func (rc *repoContext) printProjectContext(cmd *cobra.Command, p discovery.Proje
 	}
 	out := stdout(cmd)
 	if header {
-		t, err := rc.typeFor(p) // cached by projectEnvEntries
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "# %s (%s@%d)\n", p.Manifest.Name, t.Name, t.Version)
+		fmt.Fprintf(out, "# %s (%s)\n", p.Manifest.Name, p.Manifest.Types.String())
 	}
 	printEntries(out, entries)
 	return nil
 }
 
 // projectEnvEntries assembles the annotated effective environment for one
-// project: selector, dotenv layers (repo then project), rendered type and
-// manifest environment, computed vars. Later layers overwrite earlier ones,
-// and each key carries the source of its winning value. Attachment-aware:
-// synthetic repo-dir projects skip the project dotenv level. The dotenv
-// error policy matches a real run, including the no-overlay-anywhere error.
+// project: selector, dotenv layers (repo then project), each type's
+// environment in declaration order (rendered with SMITH_TYPE_DIR bound to
+// that type's own installed dir), and the manifest environment. Later layers
+// overwrite earlier ones, and each key carries the source of its winning
+// value. Attachment-aware: synthetic repo-dir projects skip the project
+// dotenv level. The dotenv error policy matches a real run, including the
+// no-overlay-anywhere error.
 func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project, target string) ([]envEntry, error) {
 	env, origin, err := rc.resolveEnvOrigin(cmd)
 	if err != nil {
 		return nil, err
 	}
-	t, err := rc.typeFor(p)
+	rt, err := rc.typeFor(p)
 	if err != nil {
 		return nil, err
 	}
@@ -242,19 +244,28 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
 
-	mergedParams, err := targetrun.ResolveParams(absRoot, rc.typeDirFor(t), p, t)
+	mergedParams, err := targetrun.ResolveParams(absRoot, p, rt)
 	if err != nil {
 		return nil, err
 	}
-	context := make(map[string]string, len(mergedParams)+len(targetrun.ReservedTemplateVars))
-	for key, value := range mergedParams {
-		context[key] = value
+	// The rendering context for type/manifest environment values mirrors a
+	// run: merged params plus the computed vars, with SMITH_TYPE_DIR bound
+	// per type — the OWNING type's dir for a per-target view.
+	contextFor := func(t *projecttype.ProjectType) map[string]string {
+		context := make(map[string]string, len(mergedParams)+len(targetrun.ReservedTemplateVars))
+		for key, value := range mergedParams {
+			context[key] = value
+		}
+		for key, value := range targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name, rt.Dirs[refOf(t)]) {
+			context[key] = value
+		}
+		return context
 	}
-	for key, value := range targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name, rc.typeDirFor(t)) {
-		context[key] = value
+	targetOwner := (*projecttype.ProjectType)(nil)
+	if target != "" {
+		targetOwner = rt.ByTarget[target] // existence checked by the caller
 	}
-
-	renderEnv := func(vars map[string]string) (map[string]string, error) {
+	renderEnv := func(vars map[string]string, context map[string]string) (map[string]string, error) {
 		out := make(map[string]string, len(vars))
 		for _, key := range sortedEnvKeys(vars) {
 			rendered, err := projecttype.RenderTemplate(vars[key], context)
@@ -308,17 +319,23 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 		return nil, dotenv.NoOverlayError(env)
 	}
 
-	typeEnv, err := renderEnv(t.Environment)
-	if err != nil {
-		return nil, fmt.Errorf("type environment: %w", err)
+	for _, t := range rt.Types {
+		typeEnv, err := renderEnv(t.Environment, contextFor(t))
+		if err != nil {
+			return nil, fmt.Errorf("type %s environment: %w", refOf(t), err)
+		}
+		typeSource := fmt.Sprintf("type %s environment", refOf(t))
+		for _, key := range sortedEnvKeys(typeEnv) {
+			set(key, typeEnv[key], typeSource)
+		}
 	}
-	manifestEnv, err := renderEnv(p.Manifest.Environment)
+	manifestContext := contextFor(rt.Types[0])
+	if targetOwner != nil {
+		manifestContext = contextFor(targetOwner)
+	}
+	manifestEnv, err := renderEnv(p.Manifest.Environment, manifestContext)
 	if err != nil {
 		return nil, fmt.Errorf("manifest environment: %w", err)
-	}
-	typeSource := fmt.Sprintf("type %s@%d environment", t.Name, t.Version)
-	for _, key := range sortedEnvKeys(typeEnv) {
-		set(key, typeEnv[key], typeSource)
 	}
 	for _, key := range sortedEnvKeys(manifestEnv) {
 		set(key, manifestEnv[key], "manifest environment")

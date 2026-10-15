@@ -158,6 +158,97 @@ func (pt *ProjectType) Defaults() map[string]string {
 	return defaults
 }
 
+// Compose validates that the given types can back one project together and
+// returns the owner indexes: which type declares each target and each param.
+// Types compose only when they are disjoint (their verbs): every conflict is
+// a hard error —
+//   - the same type name at two versions,
+//   - a target, param, or environment key declared by more than one type,
+//   - working_dir disagreement between types (the manifest working_dir knob
+//     is the sanctioned per-project override; composed types must agree on
+//     their own), and
+//   - a type depends_on entry pointing at a target its own type does not
+//     declare — cross-type wiring is not a thing; alternatives stay flavors.
+//
+// The caller names the project in errors; Compose's messages name the types
+// and the offending key.
+func Compose(types []*ProjectType) (byTarget, byParam map[string]*ProjectType, err error) {
+	byTarget = make(map[string]*ProjectType)
+	byParam = make(map[string]*ProjectType)
+	seenName := map[string]*ProjectType{}
+	for _, t := range types {
+		label := fmt.Sprintf("%s@%d", t.Name, t.Version)
+		if first, ok := seenName[t.Name]; ok {
+			return nil, nil, fmt.Errorf("types %s@%d and %s are two versions of the same type; one project cannot list both",
+				first.Name, first.Version, label)
+		}
+		seenName[t.Name] = t
+
+		// An omitted working_dir means project (Load normalizes this; the
+		// fallback keeps Compose honest for hand-built types).
+		workingDir := t.WorkingDir
+		if workingDir == "" {
+			workingDir = WorkingDirProject
+		}
+		if first := types[0]; workingDir != normalizedWorkingDir(first) {
+			return nil, nil, fmt.Errorf("types %s and %s disagree on working_dir (%q vs %q); composed types must agree — use the manifest working_dir knob to override where this project's steps execute",
+				label, fmt.Sprintf("%s@%d", first.Name, first.Version), workingDir, normalizedWorkingDir(first))
+		}
+
+		for name := range t.Targets {
+			if owner, ok := byTarget[name]; ok {
+				return nil, nil, fmt.Errorf("types %s@%d and %s both declare target %q",
+					owner.Name, owner.Version, label, name)
+			}
+			byTarget[name] = t
+		}
+		for key := range t.Params {
+			if owner, ok := byParam[key]; ok {
+				return nil, nil, fmt.Errorf("types %s@%d and %s both declare param %q",
+					owner.Name, owner.Version, label, key)
+			}
+			byParam[key] = t
+		}
+		for key := range t.Environment {
+			if owner := envOwner(types, key, t); owner != nil {
+				return nil, nil, fmt.Errorf("types %s@%d and %s both set environment key %q",
+					owner.Name, owner.Version, label, key)
+			}
+		}
+		for target, deps := range t.DependsOn {
+			for _, dep := range deps {
+				if _, ok := t.Targets[dep]; !ok {
+					return nil, nil, fmt.Errorf("type %s: target %q depends on %q, which the same type does not declare (depends_on must stay within one type)",
+						label, target, dep)
+				}
+			}
+		}
+	}
+	return byTarget, byParam, nil
+}
+
+// normalizedWorkingDir applies the type-defaulting rule to a working_dir
+// value for comparison.
+func normalizedWorkingDir(t *ProjectType) WorkingDir {
+	if t.WorkingDir == "" {
+		return WorkingDirProject
+	}
+	return t.WorkingDir
+}
+
+// envOwner returns the first type before t in types that sets key, or nil.
+func envOwner(types []*ProjectType, key string, t *ProjectType) *ProjectType {
+	for _, other := range types {
+		if other == t {
+			return nil
+		}
+		if _, ok := other.Environment[key]; ok {
+			return other
+		}
+	}
+	return nil
+}
+
 // Reserved template vars, injected into the dry-render context so type
 // steps and environment values referencing them pass load-time validation.
 // The values are obviously-not-real-paths sentinels; real values are bound

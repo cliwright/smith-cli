@@ -33,13 +33,13 @@ func buildDotenvPlan(t *testing.T, repo string, projectDotenv bool, typeEnv, man
 		Manifest: &manifest.Manifest{
 			Version:     1,
 			Name:        "alpha",
-			Type:        "mock/lib@1",
+			Types:       mustRefs("mock/std/lib@1"),
 			Dotenv:      projectDotenv,
 			Environment: manifestEnv,
 		},
 	}
 	typ := &projecttype.ProjectType{
-		Name:        "mock/lib",
+		Name:        "mock/std/lib",
 		Version:     1,
 		Description: "x",
 		Tools:       []string{"sh"},
@@ -47,8 +47,8 @@ func buildDotenvPlan(t *testing.T, repo string, projectDotenv bool, typeEnv, man
 		Targets:     map[string]projecttype.Target{"build": {Steps: []string{"echo ok"}}},
 		WorkingDir:  projecttype.WorkingDirRepo,
 	}
-	typeFor := func(discovery.Project) (*projecttype.ProjectType, error) { return typ, nil }
-	plan, err := Build([]discovery.Project{proj}, typeFor, []Node{{"alpha", "build"}}, repo, repo+"/.smith/types")
+	typeFor := func(discovery.Project) (*Resolved, error) { return resolvedOf(repo+"/.smith/types", typ), nil }
+	plan, err := Build([]discovery.Project{proj}, typeFor, []Node{{"alpha", "build"}}, repo)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

@@ -50,7 +50,8 @@ func useFakeExec(t *testing.T, f *fakeExec) {
 
 type manifestSpec struct {
 	name   string
-	typ    string
+	typ    string   // single type ref, written as the sugar scalar form
+	types  []string // several type refs, written as the array form (overrides typ when set)
 	deps   []manifest.Dependency
 	dotenv bool // opt the project into dotenv loading (smith.yml dotenv: true)
 	params map[string]string
@@ -142,7 +143,9 @@ func writeDispatchRepo(t *testing.T, repo string, manifests map[string]manifestS
 		if err := os.WriteFile(filepath.Join(full, "smith.yml"), []byte(renderManifest(spec)), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		install(spec.typ, typeSpecPtr(typeOverrides, spec.typ))
+		for _, ref := range spec.refs() {
+			install(ref, typeSpecPtr(typeOverrides, ref))
+		}
 	}
 	if len(repoTargets) > 0 && repoTargets[0] != nil {
 		for _, rt := range repoTargets[0] {
@@ -202,9 +205,26 @@ func targetsFromSteps(steps map[string][]string, descs map[string]string) map[st
 	return out
 }
 
+// refs lists every type ref the spec declares: the array form when set, the
+// scalar ref otherwise.
+func (s manifestSpec) refs() []string {
+	if len(s.types) > 0 {
+		return s.types
+	}
+	return []string{s.typ}
+}
+
 func renderManifest(spec manifestSpec) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "version: 1\nname: %s\ntype: %s\n", spec.name, spec.typ)
+	fmt.Fprintf(&b, "version: 1\nname: %s\n", spec.name)
+	if len(spec.types) > 0 {
+		b.WriteString("type:\n")
+		for _, ref := range spec.types {
+			fmt.Fprintf(&b, "  - %s\n", ref)
+		}
+	} else {
+		fmt.Fprintf(&b, "type: %s\n", spec.typ)
+	}
 	if spec.dotenv {
 		b.WriteString("dotenv: true\n")
 	}
@@ -731,5 +751,157 @@ func TestNsListTargetsAnnotatedWithDescriptions(t *testing.T) {
 	want := "build -- build the wheel\nclean\nlint  -- run the ruff linter\n"
 	if out != want {
 		t.Errorf("listing = %q, want %q", out, want)
+	}
+}
+
+// multiTypeFixture builds a repo with one project composed of two disjoint
+// types: mock/std/lib (build/test) and mock/std/docs (docs, described).
+func multiTypeFixture(t *testing.T, repo string) {
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", types: []string{"mock/std/lib@1", "mock/std/docs@1"}},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {"echo lib-build"}, "test": {"echo lib-test"}},
+		},
+		"mock/std/docs@1": {
+			targets: map[string][]string{"docs": {"echo docs"}},
+			descs:   map[string]string{"docs": "build the docs"},
+		},
+	})
+}
+
+// TestNsListTargetsMultiTypeGroupsByType: a multi-type project's target list
+// groups targets under per-type headings (blank-line separated), padding per
+// section; single-type output stays flat.
+func TestNsListTargetsMultiTypeGroupsByType(t *testing.T) {
+	repo := t.TempDir()
+	multiTypeFixture(t, repo)
+	t.Chdir(repo)
+
+	out, err := run(t, "libs", "alpha", "list")
+	if err != nil {
+		t.Fatalf("libs alpha list: %v\noutput:\n%s", err, out)
+	}
+	want := "mock/std/lib@1\n\nbuild\ntest\n\nmock/std/docs@1\n\ndocs -- build the docs\n"
+	if out != want {
+		t.Errorf("multi-type listing = %q, want %q", out, want)
+	}
+
+	// The single-type project shape is untouched.
+	repo2 := t.TempDir()
+	twoLibsFixture(t, repo2)
+	t.Chdir(repo2)
+	out, err = run(t, "libs", "alpha", "list")
+	if err != nil {
+		t.Fatalf("single-type list: %v", err)
+	}
+	if out != "build\ntest\n" {
+		t.Errorf("single-type listing = %q, want flat build/test", out)
+	}
+}
+
+// TestNsMultiTypeRunExecutesWithOwnerTypeDir: targets from both composed
+// types run through the ordinary machinery; each step sees the OWNING
+// type's SMITH_TYPE_DIR.
+func TestNsMultiTypeRunExecutesWithOwnerTypeDir(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", types: []string{"mock/std/lib@1", "mock/std/docs@1"}},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {`echo {{.SMITH_TYPE_DIR}}`}},
+		},
+		"mock/std/docs@1": {
+			targets: map[string][]string{"docs": {`echo {{.SMITH_TYPE_DIR}}`}},
+		},
+	})
+	t.Chdir(repo)
+
+	f := &fakeExec{}
+	useFakeExec(t, f)
+	if _, err := run(t, "libs", "alpha", "docs"); err != nil {
+		t.Fatalf("libs alpha docs: %v", err)
+	}
+	if _, err := run(t, "libs", "alpha", "build"); err != nil {
+		t.Fatalf("libs alpha build: %v", err)
+	}
+	libDir := filepath.Join(repo, ".smith", "types", "mock", "std", "lib@v1")
+	docsDir := filepath.Join(repo, ".smith", "types", "mock", "std", "docs@v1")
+	if !slices.Equal(f.runs, []string{"echo " + docsDir, "echo " + libDir}) {
+		t.Errorf("runs = %v, want per-target owning type dirs (docs, then build)", f.runs)
+	}
+	if len(f.envs) != 2 ||
+		!slices.Contains(f.envs[0], "SMITH_TYPE_DIR="+docsDir) ||
+		!slices.Contains(f.envs[1], "SMITH_TYPE_DIR="+libDir) {
+		t.Errorf("env SMITH_TYPE_DIR exports = %v, want owning type dirs", f.envs)
+	}
+}
+
+// TestNsMultiTypeNamespaceRunSkipsAndReports: a namespace-wide target run
+// picks up only projects whose composed types declare the target.
+func TestNsMultiTypeNamespaceRunSkipsAndReports(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", types: []string{"mock/std/lib@1", "mock/std/docs@1"}},
+		"libs/beta":  {name: "beta", typ: "mock/std/lib@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {"echo lib-build"}},
+		},
+		"mock/std/docs@1": {
+			targets: map[string][]string{"docs": {"echo docs"}},
+		},
+	})
+	t.Chdir(repo)
+
+	f := &fakeExec{}
+	useFakeExec(t, f)
+	out, err := run(t, "libs", "docs")
+	if err != nil {
+		t.Fatalf("libs docs: %v\noutput:\n%s", err, out)
+	}
+	if !slices.Equal(f.runs, []string{"echo docs"}) {
+		t.Errorf("runs = %v, want only alpha's docs", f.runs)
+	}
+	if !strings.Contains(out, "ran 1, skipped 1 (type has no 'docs' target)") {
+		t.Errorf("output missing skip summary:\n%s", out)
+	}
+}
+
+// TestNsMultiTypeUnknownTargetNamesTypes: an unknown target error lists what
+// the composed types DO declare, naming all refs.
+func TestNsMultiTypeUnknownTargetNamesTypes(t *testing.T) {
+	repo := t.TempDir()
+	multiTypeFixture(t, repo)
+	t.Chdir(repo)
+
+	_, err := run(t, "libs", "alpha", "nosuch")
+	if err == nil || !strings.Contains(err.Error(), `has no target "nosuch"`) ||
+		!strings.Contains(err.Error(), "build, docs, test") ||
+		!strings.Contains(err.Error(), "types mock/std/lib@1, mock/std/docs@1") {
+		t.Fatalf("error = %v, want unknown-target listing naming all refs", err)
+	}
+}
+
+// TestNsMultiTypeCollisionIsHardError: two types declaring the same target
+// fail loudly at first resolution, naming the project and both types.
+func TestNsMultiTypeCollisionIsHardError(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", types: []string{"mock/std/lib@1", "mock/std/other@1"}},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {"echo a"}},
+		},
+		"mock/std/other@1": {
+			targets: map[string][]string{"build": {"echo b"}},
+		},
+	})
+	t.Chdir(repo)
+
+	_, err := run(t, "libs", "alpha", "list")
+	if err == nil || !strings.Contains(err.Error(), `project "alpha"`) ||
+		!strings.Contains(err.Error(), `both declare target "build"`) {
+		t.Fatalf("error = %v, want composition collision naming project and types", err)
 	}
 }
