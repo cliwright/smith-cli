@@ -155,7 +155,7 @@ func TestBuildClosureAndOrder(t *testing.T) {
 
 	// Roots select only alpha:build; the closure pulls in alpha:test (type
 	// dep) and beta:build (cross-project dep) as prerequisites.
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestBuildDeduplicatesAcrossRoots(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}, {"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}, {"alpha", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestBuildCrossNamespaceClosure(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"web", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"web", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestBuildCycleError(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), "dependency cycle") ||
 		!strings.Contains(err.Error(), "alpha:build") || !strings.Contains(err.Error(), "alpha:test") {
 		t.Fatalf("Build error = %v, want cycle naming alpha:build/alpha:test", err)
@@ -253,7 +253,7 @@ func TestBuildDanglingTypeTarget(t *testing.T) {
 		return resolvedOfE("/repo/.smith/types", types[p.Manifest.Name])
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "depends_on must stay within one type") {
 		t.Fatalf("Build error = %v, want dangling type depends_on named", err)
 	}
@@ -273,7 +273,7 @@ func TestBuildDanglingManifestTarget(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), `manifest of project "alpha" depends on "beta" with target "nope"`) {
 		t.Fatalf("Build error = %v, want manifest dangling-target error", err)
 	}
@@ -293,7 +293,7 @@ func TestExecuteFailFast(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "test"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "test"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestExecuteWorkingDir(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"repojob", "build"}, {"projjob", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"repojob", "build"}, {"projjob", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestExecuteWorkingDirManifestOverridesType(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"up", "build"}, {"down", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestBuildRejectsUndeclaredManifestParam(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/std/lib@1) sets param "speed", which the type does not declare`) {
 		t.Fatalf("Build error = %v, want undeclared-param error naming project, key, and type", err)
 	}
@@ -416,7 +416,7 @@ func TestExecuteRendersStepsWithOverrides(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"beta", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestExecuteEnvPrecedence(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestExecuteRealShellEnv(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestExecuteParamValueUsesComputedVars(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "info"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "info"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -601,7 +601,7 @@ func TestExecuteEnvUsesParamsAndComputedVars(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestBuildPhaseARejectsParamReferencingParam(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), `project "alpha" (type mock/std/lib@1) param "config_path"`) ||
 		!strings.Contains(err.Error(), "param values may reference computed vars (SMITH_*) only, not other params") {
 		t.Fatalf("Build error = %v, want the param-references-param hard error", err)
@@ -659,7 +659,7 @@ func TestBuildPhaseARejectsUnknownVar(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), `param "config_path"`) ||
 		!strings.Contains(err.Error(), `unknown var "SMITH_FOO"`) {
 		t.Fatalf("Build error = %v, want the unknown-computed-var hard error", err)
@@ -691,7 +691,7 @@ func TestAttachmentClosureAndComputedVars(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo")
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -741,7 +741,7 @@ func TestAttachmentRealShell(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", types[p.Manifest.Name]), nil
 	}
 
-	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir)
+	plan, err := Build([]discovery.Project{attachment}, typeFor, []Node{{"python", "setup"}}, dir, "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestExecuteMultiTypeOwnerDirs(t *testing.T) {
 		return resolvedOf(typesRoot, buildType, docsType), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "docs"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "docs"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -839,7 +839,7 @@ func TestResolveParamsOwnerDirPhaseA(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", libType, docsType), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -865,7 +865,7 @@ func TestBuildMultiTypeTargetCollision(t *testing.T) {
 		return resolvedOfE("/repo/.smith/types", a, b)
 	}
 
-	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo")
+	_, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
 	if err == nil || !strings.Contains(err.Error(), `both declare target "build"`) {
 		t.Fatalf("Build error = %v, want the target-collision composition error", err)
 	}
@@ -896,7 +896,7 @@ func TestExecuteMultiTypeDependsOnWithinOwningType(t *testing.T) {
 		return resolvedOf("/repo/.smith/types", libType, docsType), nil
 	}
 
-	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "docs"}}, "/repo")
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}, {"alpha", "docs"}}, "/repo", "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

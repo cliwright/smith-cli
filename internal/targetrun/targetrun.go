@@ -93,10 +93,13 @@ type Plan struct {
 
 	// Dotenv configuration, set by the caller before PrepareDotenv and
 	// Execute. RepoDotenv mirrors the dotenv: key of .smith/repo.yml;
-	// SmithEnv is the resolved environment selector ("" = none selected).
-	// Neither affects graph shape — only the step environment.
+	// SmithEnv is the resolved environment selector ("" = none selected);
+	// CliArgs is the shell-quoted join of the tokens after the first
+	// standalone "--" ("" when absent). Neither affects graph shape — only
+	// the step environment and rendering context.
 	RepoDotenv bool
 	SmithEnv   string
+	CliArgs    string
 
 	dotenvRepo     []string            // cached repo-level KEY=VALUE entries
 	dotenvProjects map[string][]string // project name → cached project-level entries
@@ -110,19 +113,24 @@ func (p *Plan) Order() []Node { return p.order }
 // construction (the param key pattern is lowercase-only). SMITH_TARGET,
 // SMITH_ENV, and SMITH_PAGER are deliberately NOT here — they are
 // subprocess-env-only runtime selectors, since manifests and params are
-// neither target- nor run-scoped.
-var ReservedTemplateVars = []string{"SMITH_REPO_ROOT", "SMITH_PROJECT", "SMITH_PROJECT_DIR", "SMITH_TYPE_DIR"}
+// neither target- nor run-scoped. SMITH_CLI_ARGS IS here (and also exported
+// to the step env): the passthrough tokens are invocation-scoped but known
+// at parse time, so types may template it unconditionally — it is always
+// defined, "" when no "--" was given.
+var ReservedTemplateVars = []string{"SMITH_REPO_ROOT", "SMITH_PROJECT", "SMITH_PROJECT_DIR", "SMITH_TYPE_DIR", "SMITH_CLI_ARGS"}
 
 // ComputedVars builds the reserved template context for one project. dir is
 // the project directory relative to the (absolute) repo root; typeDir is
 // the absolute installed directory of the project's type (.smith/types
-// <name>@v<N>), the anchor for type-shipped scripts and help.
-func ComputedVars(absRoot, dir, project, typeDir string) map[string]string {
+// <name>@v<N>), the anchor for type-shipped scripts and help; cliArgs is
+// the shell-quoted "--" passthrough ("" when absent).
+func ComputedVars(absRoot, dir, project, typeDir, cliArgs string) map[string]string {
 	return map[string]string{
 		"SMITH_REPO_ROOT":   absRoot,
 		"SMITH_PROJECT":     project,
 		"SMITH_PROJECT_DIR": filepath.Join(absRoot, filepath.FromSlash(dir)),
 		"SMITH_TYPE_DIR":    typeDir,
+		"SMITH_CLI_ARGS":    cliArgs,
 	}
 }
 
@@ -152,9 +160,10 @@ func phaseAError(p discovery.Project, t *projecttype.ProjectType, key string, er
 // is a hard error naming project, key, and type. A manifest param no type
 // declares is likewise a hard error naming the project's types; each value
 // renders with SMITH_TYPE_DIR bound to the OWNING type's installed dir.
+// cliArgs is the invocation's "--" passthrough ("" when absent).
 // Exported for the --context and help views, which resolve a single project
 // without building a graph.
-func ResolveParams(absRoot string, p discovery.Project, rt *Resolved) (map[string]string, error) {
+func ResolveParams(absRoot string, p discovery.Project, rt *Resolved, cliArgs string) (map[string]string, error) {
 	merged := map[string]string{}
 	for _, t := range rt.Types {
 		for key, def := range t.Defaults() {
@@ -172,7 +181,7 @@ func ResolveParams(absRoot string, p discovery.Project, rt *Resolved) (map[strin
 			return nil, fmt.Errorf("project %q (%s) sets param %q, which the type does not declare",
 				p.Manifest.Name, rt.TypeLabel(), key)
 		}
-		rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], ComputedVars(absRoot, p.Dir, p.Manifest.Name, rt.Dirs[ref(owner)]))
+		rendered, err := projecttype.RenderTemplate(p.Manifest.Params[key], ComputedVars(absRoot, p.Dir, p.Manifest.Name, rt.Dirs[ref(owner)], cliArgs))
 		if err != nil {
 			return nil, phaseAError(p, owner, key, err)
 		}
@@ -187,8 +196,10 @@ func ResolveParams(absRoot string, p discovery.Project, rt *Resolved) (map[strin
 // named by a manifest depends_on entry, is a hard error naming project,
 // target, and type. repoRoot scopes the reserved template vars
 // (SMITH_REPO_ROOT, SMITH_PROJECT, SMITH_PROJECT_DIR); the installed type
-// dirs (SMITH_TYPE_DIR) ride along in Resolved.
-func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot string) (*Plan, error) {
+// dirs (SMITH_TYPE_DIR) ride along in Resolved. cliArgs is the invocation's
+// "--" passthrough ("" when absent), needed here because phase-A param
+// rendering happens at Build time.
+func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot, cliArgs string) (*Plan, error) {
 	absRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repo root: %w", err)
@@ -215,7 +226,7 @@ func Build(projects []discovery.Project, typeFor TypeFor, roots []Node, repoRoot
 			return nil, err
 		}
 		resolved[name] = rt
-		merged, err := ResolveParams(absRoot, p, rt)
+		merged, err := ResolveParams(absRoot, p, rt, cliArgs)
 		if err != nil {
 			return nil, err
 		}
@@ -445,7 +456,7 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 		for key, value := range params {
 			context[key] = value
 		}
-		for key, value := range ComputedVars(absRoot, p.dirs[n.Project], n.Project, rt.Dirs[ref(t)]) {
+		for key, value := range ComputedVars(absRoot, p.dirs[n.Project], n.Project, rt.Dirs[ref(t)], p.CliArgs) {
 			context[key] = value
 		}
 
@@ -484,7 +495,9 @@ func (p *Plan) Execute(ctx context.Context, r Runner, repoRoot string, out io.Wr
 // selected. SMITH_PROJECT_DIR is template-only and deliberately NOT exported
 // here; SMITH_TYPE_DIR IS — a step shells out to $SMITH_TYPE_DIR/scripts/...
 // and should not have to template it; it is the OWNING type's dir for this
-// target.
+// target. SMITH_CLI_ARGS is exported too AND is a template var (unlike
+// SMITH_TARGET/SMITH_ENV, which are subprocess-env-only): always present,
+// "" when no "--" passthrough was given.
 func (p *Plan) stepEnv(n Node, rt *Resolved, t *projecttype.ProjectType, context map[string]string, absRoot string) ([]string, error) {
 	env := os.Environ()
 	env = append(env, p.dotenvRepo...)
@@ -519,6 +532,7 @@ func (p *Plan) stepEnv(n Node, rt *Resolved, t *projecttype.ProjectType, context
 		"SMITH_PROJECT="+n.Project,
 		"SMITH_TARGET="+n.Target,
 		"SMITH_TYPE_DIR="+rt.Dirs[ref(t)],
+		"SMITH_CLI_ARGS="+p.CliArgs,
 	)
 	if p.SmithEnv != "" {
 		env = append(env, "SMITH_ENV="+p.SmithEnv)

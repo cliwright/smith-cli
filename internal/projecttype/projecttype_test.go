@@ -74,6 +74,19 @@ func TestLoad(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "step templating the cli args passthrough",
+			path: "testdata/project-type-cliargs.json",
+			check: func(t *testing.T, pt *ProjectType) {
+				t.Helper()
+				// {{.SMITH_CLI_ARGS}} must survive load-time dry-render
+				// (sentinel in the render context); the real value binds
+				// per invocation at run time.
+				if !slices.Equal(pt.Targets["env.get"].Steps, []string{"psenv get {{.SMITH_CLI_ARGS}}"}) {
+					t.Errorf("Targets[env.get] = %v", pt.Targets["env.get"])
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -48,7 +48,7 @@ func buildDotenvPlan(t *testing.T, repo string, projectDotenv bool, typeEnv, man
 		WorkingDir:  projecttype.WorkingDirRepo,
 	}
 	typeFor := func(discovery.Project) (*Resolved, error) { return resolvedOf(repo+"/.smith/types", typ), nil }
-	plan, err := Build([]discovery.Project{proj}, typeFor, []Node{{"alpha", "build"}}, repo)
+	plan, err := Build([]discovery.Project{proj}, typeFor, []Node{{"alpha", "build"}}, repo, "")
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

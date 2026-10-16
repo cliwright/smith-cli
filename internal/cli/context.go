@@ -261,7 +261,7 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
 
-	mergedParams, err := targetrun.ResolveParams(absRoot, p, rt)
+	mergedParams, err := targetrun.ResolveParams(absRoot, p, rt, rc.cliArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +273,7 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 		for key, value := range mergedParams {
 			context[key] = value
 		}
-		for key, value := range targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name, rt.Dirs[refOf(t)]) {
+		for key, value := range targetrun.ComputedVars(absRoot, p.Dir, p.Manifest.Name, rt.Dirs[refOf(t)], rc.cliArgs) {
 			context[key] = value
 		}
 		return context
@@ -365,6 +365,7 @@ func (rc *repoContext) projectEnvEntries(cmd *cobra.Command, p discovery.Project
 	} else {
 		set("SMITH_TARGET", "<per target>", "computed (set per run)")
 	}
+	set("SMITH_CLI_ARGS", rc.cliArgs, "computed (-- passthrough)")
 
 	keys := make([]string, 0, len(effective))
 	for key := range effective {

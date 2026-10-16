@@ -6,6 +6,8 @@ package cli
 import (
 	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -68,7 +70,15 @@ func stdout(cmd *cobra.Command) io.Writer {
 // repo-wide target run) via dispatchPositional. Subcommand names stay
 // reserved — cobra routes them before this runs, so a project named "sync"
 // is shadowed by the sync command (documented, not coded around).
+//
+// Everything after the first standalone "--" is captured verbatim before any
+// routing: grammar args flow on to the namespace/repo/services dispatchers
+// (so the existing too-many-arguments errors are preserved when no "--" is
+// given), and the passthrough tokens become the invocation's SMITH_CLI_ARGS
+// (shell-quoted join), broadcast to every step of a target run.
 func dispatch(cmd *cobra.Command, args []string) error {
+	grammar, passthrough := splitPassthrough(cmd, args)
+	args = grammar
 	contextFlag, _ := cmd.Flags().GetBool("context")
 	if len(args) == 0 && !contextFlag {
 		return cmd.Help()
@@ -77,6 +87,7 @@ func dispatch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	rc.cliArgs = joinPassthrough(passthrough)
 	if contextFlag {
 		return rc.dispatchContext(cmd, args)
 	}
@@ -92,4 +103,36 @@ func dispatch(cmd *cobra.Command, args []string) error {
 		return rc.dispatchServices(cmd, args[1:])
 	}
 	return rc.dispatchPositional(cmd, args)
+}
+
+// splitPassthrough separates the grammar args from the tokens after the
+// first standalone "--". pflag consumes the "--" itself, packs the remaining
+// tokens into Args(), and records the boundary at ArgsLenAtDash (-1 when no
+// "--" was given).
+func splitPassthrough(cmd *cobra.Command, args []string) (grammar, passthrough []string) {
+	if n := cmd.ArgsLenAtDash(); n >= 0 {
+		return args[:n], args[n:]
+	}
+	return args, nil
+}
+
+// passthroughSafe matches tokens that survive an sh -c re-parse unchanged
+// without quoting: alphanumerics and a conservative safe-punctuation set.
+var passthroughSafe = regexp.MustCompile(`^[a-zA-Z0-9_@%+=:,./-]+$`)
+
+// joinPassthrough renders passthrough tokens round-trip-safe for
+// substitution into a step string and re-parsing by sh -c: a token is
+// single-quoted iff it is empty or contains anything outside the safe
+// charset (embedded single quotes close, escape, and reopen), and tokens
+// are joined with single spaces. No tokens yields "".
+func joinPassthrough(tokens []string) string {
+	quoted := make([]string, len(tokens))
+	for i, tok := range tokens {
+		if tok == "" || !passthroughSafe.MatchString(tok) {
+			quoted[i] = "'" + strings.ReplaceAll(tok, "'", `'\''`) + "'"
+		} else {
+			quoted[i] = tok
+		}
+	}
+	return strings.Join(quoted, " ")
 }

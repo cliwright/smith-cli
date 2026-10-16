@@ -1,0 +1,9 @@
+{
+  "name": "psenv/std/tool",
+  "version": 1,
+  "description": "Templates the -- passthrough",
+  "tools": ["sh"],
+  "targets": {
+    "env.get": ["psenv get {{.SMITH_CLI_ARGS}}"]
+  }
+}

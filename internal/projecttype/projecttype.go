@@ -258,6 +258,7 @@ var dryRenderComputedVars = map[string]string{
 	"SMITH_PROJECT":     "<smith-project>",
 	"SMITH_PROJECT_DIR": "<smith-project-dir>",
 	"SMITH_TYPE_DIR":    "<smith-type-dir>",
+	"SMITH_CLI_ARGS":    "<smith-cli-args>",
 }
 
 // validateTemplates dry-renders every step and environment value against the

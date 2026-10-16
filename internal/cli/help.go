@@ -29,15 +29,16 @@ import (
 var lookPath = exec.LookPath
 
 // helpContext is everything needed to compose one help document: the
-// project, its custody-verified composed types, the absolute repo root, and
-// the merged params a real run would use. Per-type blocks bind
-// SMITH_TYPE_DIR to that type's installed dir (the owning type's dir is what
-// a step would see).
+// project, its custody-verified composed types, the absolute repo root, the
+// merged params a real run would use, and the invocation's "--" passthrough
+// ("" when absent). Per-type blocks bind SMITH_TYPE_DIR to that type's
+// installed dir (the owning type's dir is what a step would see).
 type helpContext struct {
 	project  discovery.Project
 	resolved *targetrun.Resolved
 	absRoot  string
 	params   map[string]string // merged params (all types, disjoint by composition)
+	cliArgs  string
 }
 
 func (rc *repoContext) helpContext(p discovery.Project) (*helpContext, error) {
@@ -49,18 +50,18 @@ func (rc *repoContext) helpContext(p discovery.Project) (*helpContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
-	params, err := targetrun.ResolveParams(absRoot, p, rt)
+	params, err := targetrun.ResolveParams(absRoot, p, rt, rc.cliArgs)
 	if err != nil {
 		return nil, err
 	}
-	return &helpContext{project: p, resolved: rt, absRoot: absRoot, params: params}, nil
+	return &helpContext{project: p, resolved: rt, absRoot: absRoot, params: params, cliArgs: rc.cliArgs}, nil
 }
 
 // varsFor returns the rendering context of one type's block: the merged
-// params plus the computed vars with SMITH_TYPE_DIR bound to that type's
-// installed dir.
+// params plus the computed vars (including the "--" passthrough) with
+// SMITH_TYPE_DIR bound to that type's installed dir.
 func (hc *helpContext) varsFor(t *projecttype.ProjectType) map[string]string {
-	vars := targetrun.ComputedVars(hc.absRoot, hc.project.Dir, hc.project.Manifest.Name, hc.resolved.Dirs[refOf(t)])
+	vars := targetrun.ComputedVars(hc.absRoot, hc.project.Dir, hc.project.Manifest.Name, hc.resolved.Dirs[refOf(t)], hc.cliArgs)
 	for key, value := range hc.params {
 		vars[key] = value
 	}

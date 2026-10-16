@@ -38,6 +38,9 @@ type repoContext struct {
 	services []*service.Service  // sorted by name
 	lockFile *lock.Lock
 	types    map[string]*targetrun.Resolved // by project name, resolved lazily
+	// cliArgs is the invocation's "--" passthrough (shell-quoted join, ""
+	// when absent), captured in dispatch and broadcast to every plan.
+	cliArgs string
 }
 
 func loadRepoContext() (*repoContext, error) {
@@ -330,7 +333,7 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	}
 	warnParallel(cmd)
 	plan, err := targetrun.Build([]discovery.Project{att}, rc.typeFor,
-		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot)
+		[]targetrun.Node{{Project: att.Manifest.Name, Target: rest[1]}}, rc.repoRoot, rc.cliArgs)
 	if err != nil {
 		return err
 	}
@@ -601,7 +604,7 @@ func (rc *repoContext) runSingle(cmd *cobra.Command, p discovery.Project, target
 			p.Manifest.Name, rt.TypeLabel(), target, strings.Join(sortedKeys(rt.ByTarget), ", "))
 	}
 	warnParallel(cmd)
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, []targetrun.Node{{Project: p.Manifest.Name, Target: target}}, rc.repoRoot, rc.cliArgs)
 	if err != nil {
 		return err
 	}
@@ -638,7 +641,7 @@ func (rc *repoContext) runTarget(cmd *cobra.Command, target string, projects []d
 		return fmt.Errorf("no project in %s has a %q target%s", scope, target, hint)
 	}
 
-	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot)
+	plan, err := targetrun.Build(rc.projects, rc.typeFor, roots, rc.repoRoot, rc.cliArgs)
 	if err != nil {
 		return err
 	}
@@ -659,8 +662,10 @@ func (rc *repoContext) resolveEnv(cmd *cobra.Command) (string, error) {
 }
 
 // executePlan runs a built plan: it resolves the environment selector,
-// attaches the repo's dotenv opt-in, preflights dotenv loading (a hard error
-// before anything runs when a promised file is missing), and executes.
+// attaches the repo's dotenv opt-in and the invocation's "--" passthrough,
+// preflights dotenv loading (a hard error before anything runs when a
+// promised file is missing), and executes. Every plan path (project runs,
+// namespace/repo-wide runs, attachments, services) funnels through here.
 func (rc *repoContext) executePlan(cmd *cobra.Command, plan *targetrun.Plan) error {
 	env, err := rc.resolveEnv(cmd)
 	if err != nil {
@@ -668,6 +673,7 @@ func (rc *repoContext) executePlan(cmd *cobra.Command, plan *targetrun.Plan) err
 	}
 	plan.RepoDotenv = rc.cfg.Dotenv
 	plan.SmithEnv = env
+	plan.CliArgs = rc.cliArgs
 	if err := plan.PrepareDotenv(rc.repoRoot); err != nil {
 		return err
 	}
