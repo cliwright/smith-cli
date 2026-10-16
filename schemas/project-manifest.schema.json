@@ -61,13 +61,13 @@
               "targets": {
                 "type": "array",
                 "minItems": 1,
-                "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)?$" },
                 "uniqueItems": true
               },
               "before": {
                 "type": "array",
                 "minItems": 1,
-                "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)?$" },
                 "uniqueItems": true
               }
             }

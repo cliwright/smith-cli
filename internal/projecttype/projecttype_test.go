@@ -56,6 +56,24 @@ func TestLoad(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "dotted target names",
+			path: "testdata/project-type-dotted.json",
+			check: func(t *testing.T, pt *ProjectType) {
+				t.Helper()
+				if !slices.Equal(pt.Targets["env.get"].Steps, []string{"echo get"}) {
+					t.Errorf("Targets[env.get] = %v", pt.Targets["env.get"])
+				}
+				if !slices.Equal(pt.DependsOn["build"], []string{"env.put"}) {
+					t.Errorf("DependsOn[build] = %v", pt.DependsOn["build"])
+				}
+				// Compose resolves dotted depends_on keys and values as
+				// opaque names against the declared target set.
+				if _, _, err := Compose([]*ProjectType{pt}); err != nil {
+					t.Errorf("Compose: %v", err)
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,6 +111,11 @@ func TestLoadRejectsInvalidDocs(t *testing.T) {
 			name: "target with empty steps",
 			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"build":[]}}`,
 			want: "build",
+		},
+		{
+			name: "target name with two dots",
+			json: `{"name":"go/std/lib","version":1,"description":"x","tools":["go"],"targets":{"env.get.put":["echo x"]}}`,
+			want: "targets",
 		},
 		{
 			name: "bad type name",

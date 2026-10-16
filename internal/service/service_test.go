@@ -50,12 +50,29 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
+// TestLoadDottedComponentTarget: a component may map a dotted component
+// target (namespaced by its type author, e.g. env.get) onto a service
+// target; the key is one opaque token, the value stays in the closed
+// vocabulary.
+func TestLoadDottedComponentTarget(t *testing.T) {
+	doc := "version: 1\nname: auth\ncomponents:\n  - project: auth-tofu\n    targets: {env.get: build}\n"
+	path := writeServiceFile(t, t.TempDir(), "auth.yml", doc)
+	s, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := s.Components[0].Targets["env.get"]; got != "build" {
+		t.Errorf("mapping[env.get] = %q, want build", got)
+	}
+}
+
 func TestLoadRejectsInvalidDocuments(t *testing.T) {
 	cases := map[string]string{
 		"unknown top-level key":           "version: 1\nname: auth\ncomponents:\n  - project: a\nbogus: true\n",
 		"name pattern":                    "version: 1\nname: Auth_Service\ncomponents:\n  - project: a\n",
 		"empty components":                "version: 1\nname: auth\ncomponents: []\n",
 		"mapping value not in vocabulary": "version: 1\nname: auth\ncomponents:\n  - project: a\n    targets: {apply: frisbee}\n",
+		"mapping key with two dots":       "version: 1\nname: auth\ncomponents:\n  - project: a\n    targets: {env.get.put: build}\n",
 		"component extra key":             "version: 1\nname: auth\ncomponents:\n  - project: a\n    when: always\n",
 		"version two":                     "version: 2\nname: auth\ncomponents:\n  - project: a\n",
 	}

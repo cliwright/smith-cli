@@ -1246,3 +1246,56 @@ func TestCrispyRootLevelProject(t *testing.T) {
 		t.Errorf("bare listing = %q, want build", out)
 	}
 }
+
+// TestNsDottedTargetNames: target names may carry one dot segment
+// (type-author namespacing for tooling types, e.g. env.get); the dotted
+// name is one opaque token through load, dispatch, depends_on, listings,
+// and help.
+func TestNsDottedTargetNames(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/psi": {name: "psi", typ: "mock/std/psenv@1"},
+	}, map[string]typeSpec{
+		"mock/std/psenv@1": {
+			targets: map[string][]string{"env.get": {"echo get"}, "env.put": {"echo put"}},
+			deps:    map[string][]string{"env.get": {"env.put"}},
+			descs:   map[string]string{"env.get": "read an env value"},
+		},
+	})
+	t.Chdir(repo)
+
+	// A dotted depends_on value resolves inside the type: env.put runs
+	// before env.get.
+	out, runs := runWithFake(t, "libs", "psi", "env.get")
+	if !slices.Equal(runs, []string{"echo put", "echo get"}) {
+		t.Errorf("steps = %v, want the dotted depends_on closure (env.put, env.get)", runs)
+	}
+	if !strings.Contains(out, "==> psi:env.put") || !strings.Contains(out, "==> psi:env.get") {
+		t.Errorf("output missing dotted node headers:\n%s", out)
+	}
+
+	// Crispy addressing treats the dotted name as one token.
+	_, crispyRuns := runWithFake(t, "psi", "env.get")
+	if !slices.Equal(crispyRuns, runs) {
+		t.Errorf("crispy steps = %v, want %v", crispyRuns, runs)
+	}
+
+	// The listing uses the dotted names verbatim.
+	out, err := run(t, "libs", "psi", "list")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if out != "env.get -- read an env value\nenv.put\n" {
+		t.Errorf("listing = %q", out)
+	}
+
+	// Target help resolves the dotted name.
+	plainDisplay(t)
+	out, err = run(t, "libs", "psi", "env.get", "help")
+	if err != nil {
+		t.Fatalf("env.get help: %v", err)
+	}
+	if !strings.Contains(out, "# psi:env.get") || !strings.Contains(out, "```sh\necho get\n```") {
+		t.Errorf("target help missing the dotted identity:\n%s", out)
+	}
+}

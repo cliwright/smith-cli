@@ -1,0 +1,15 @@
+{
+  "name": "psenv/std/tool",
+  "version": 1,
+  "description": "Tooling type with namespaced (dotted) target names",
+  "tools": ["sh"],
+  "targets": {
+    "build": ["echo build"],
+    "env.get": ["echo get"],
+    "env.put": ["echo put"]
+  },
+  "depends_on": {
+    "build": ["env.put"],
+    "env.get": ["build"]
+  }
+}

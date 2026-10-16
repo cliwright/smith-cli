@@ -59,6 +59,22 @@ func TestLoad(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "dotted target names in explicit depends_on",
+			path: "testdata/smith-dotted.yml",
+			check: func(t *testing.T, m *Manifest) {
+				t.Helper()
+				if len(m.DependsOn) != 1 {
+					t.Fatalf("len(DependsOn) = %d, want 1", len(m.DependsOn))
+				}
+				dep := m.DependsOn[0]
+				if dep.Project != "auth" ||
+					!slices.Equal(dep.Targets, []string{"env.get"}) ||
+					!slices.Equal(dep.Before, []string{"env.put"}) {
+					t.Errorf("dep = %+v, want {auth [env.get] [env.put]}", dep)
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

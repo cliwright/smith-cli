@@ -1,0 +1,7 @@
+version: 1
+name: psi
+type: psenv/std/tool@1
+depends_on:
+  - project: auth
+    targets: [env.get]
+    before: [env.put]

@@ -38,7 +38,7 @@
             "type": "object",
             "additionalProperties": false,
             "patternProperties": {
-              "^[a-z][a-z0-9-]*$": {
+              "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)?$": {
                 "type": "string",
                 "enum": ["build", "test", "lint", "push", "plan", "deploy", "destroy"]
               }

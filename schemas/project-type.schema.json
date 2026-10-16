@@ -55,11 +55,11 @@
       "default": "project"
     },
     "targets": {
-      "description": "Named targets, each run as an ordered list of shell command steps (the first non-zero exit fails the target). Each target is either a bare steps array, or an object with the steps plus an optional short description (~80 chars) shown in target listings.",
+      "description": "Named targets, each run as an ordered list of shell command steps (the first non-zero exit fails the target). Each target is either a bare steps array, or an object with the steps plus an optional short description (~80 chars) shown in target listings. Target names may carry one dot segment (e.g. \"env.get\") for namespaced tooling-type targets; the dotted name is an opaque single token everywhere targets are named (runs, help, lists, --context, depends_on).",
       "type": "object",
       "minProperties": 1,
       "patternProperties": {
-        "^[a-z][a-z0-9-]*$": {
+        "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)?$": {
           "oneOf": [
             {
               "description": "Bare form: just the steps.",
@@ -90,7 +90,7 @@
       "description": "Target dependency map: target -> targets that must complete first. Referenced target names, self-references, and cycles are validated by smith (not expressible here).",
       "type": "object",
       "patternProperties": {
-        "^[a-z][a-z0-9-]*$": {
+        "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)?$": {
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 },
