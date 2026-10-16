@@ -31,6 +31,9 @@ go.work.sum
 # Built binary (task build) — safe to add bin/ to PATH
 /bin/
 
+# Zensical docs build output
+/site/
+
 # Editor/IDE
 # .idea/
 # .vscode/

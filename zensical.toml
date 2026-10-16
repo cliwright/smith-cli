@@ -1,0 +1,18 @@
+[project]
+site_name = "Smith"
+
+nav = [
+  { "Introduction" = "index.md" },
+  { "Getting started" = "getting-started.md" },
+  { "Core concepts" = "concepts.md" },
+  { "Usage" = [
+    { "Running targets" = "running-targets.md" },
+    { "Environments & dotenv" = "environments.md" },
+    { "Passing arguments (--)" = "cli-args.md" }
+  ] },
+  { "Authoring" = [
+    { "Project types" = "authoring-types.md" },
+    { "Project templates" = "authoring-templates.md" }
+  ] },
+  { "Command reference" = "reference.md" }
+]

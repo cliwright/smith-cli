@@ -41,3 +41,13 @@ tasks:
     desc: Format all Go files
     cmds:
       - gofmt -w .
+
+  docs:
+    desc: Build the user guide (docs/ → site/, requires uv)
+    cmds:
+      - uvx zensical build
+
+  docs:serve:
+    desc: Preview the user guide at http://localhost:8000 (requires uv)
+    cmds:
+      - uvx zensical serve
