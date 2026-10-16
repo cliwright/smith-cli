@@ -905,3 +905,344 @@ func TestNsMultiTypeCollisionIsHardError(t *testing.T) {
 		t.Fatalf("error = %v, want composition collision naming project and types", err)
 	}
 }
+
+// Namespace-free project addressing ("crispy" targets): a uniquely named
+// project is reachable as `smith <name> ...` without its namespace. The
+// tests below pin the precedence rules documented on dispatchPositional:
+// with 2+ args an exact project-name match beats the namespace reading of
+// arg0 (PROJECT WINS); with 1 arg the order is namespace → repo-wide target
+// → project target listing. Every ns-free form produces byte-identical
+// output to its `smith <ns> <name>` counterpart.
+
+// TestCrispyRunTargetMatchesNsForm: `smith alpha build` runs the same plan
+// with the same output as `smith libs alpha build`.
+func TestCrispyRunTargetMatchesNsForm(t *testing.T) {
+	repo := t.TempDir()
+	twoLibsFixture(t, repo)
+	t.Chdir(repo)
+
+	nsOut, nsRuns := runWithFake(t, "libs", "alpha", "build")
+	crispyOut, crispyRuns := runWithFake(t, "alpha", "build")
+	if crispyOut != nsOut {
+		t.Errorf("crispy output differs from ns form:\ncrispy:\n%s\nns:\n%s", crispyOut, nsOut)
+	}
+	if !slices.Equal(crispyRuns, nsRuns) || len(crispyRuns) == 0 {
+		t.Errorf("crispy steps = %v, ns steps = %v", crispyRuns, nsRuns)
+	}
+	if !strings.Contains(crispyOut, "==> alpha:build") {
+		t.Errorf("output missing node header:\n%s", crispyOut)
+	}
+}
+
+// runWithFake executes args with a fresh recording fake and returns the
+// captured output and step commands.
+func runWithFake(t *testing.T, args ...string) (string, []string) {
+	t.Helper()
+	f := &fakeExec{}
+	useFakeExec(t, f)
+	out, err := run(t, args...)
+	if err != nil {
+		t.Fatalf("%v: %v\noutput:\n%s", args, err, out)
+	}
+	return out, f.runs
+}
+
+// TestCrispyListTargetsMatchesNsForm: `smith alpha list` and the bare
+// `smith alpha` list the project's targets exactly like `smith libs alpha
+// list`.
+func TestCrispyListTargetsMatchesNsForm(t *testing.T) {
+	repo := t.TempDir()
+	twoLibsFixture(t, repo)
+	t.Chdir(repo)
+
+	out, err := run(t, "libs", "alpha", "list")
+	if err != nil {
+		t.Fatalf("libs alpha list: %v", err)
+	}
+	for _, args := range [][]string{{"alpha", "list"}, {"alpha"}} {
+		got, err := run(t, args...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if got != out {
+			t.Errorf("%v = %q, want ns-form output %q", args, got, out)
+		}
+	}
+	if out != "build\ntest\n" {
+		t.Errorf("ns-form listing = %q, want build/test", out)
+	}
+}
+
+// TestCrispyHelpMatchesNsForm: `smith alpha help` and `smith alpha build
+// help` render byte-identically to the namespace forms.
+func TestCrispyHelpMatchesNsForm(t *testing.T) {
+	repo := helpFixture(t)
+	t.Chdir(repo)
+	plainDisplay(t)
+
+	typeHelpNS, err := run(t, "libs", "alpha", "help")
+	if err != nil {
+		t.Fatalf("libs alpha help: %v", err)
+	}
+	typeHelpCrispy, err := run(t, "alpha", "help")
+	if err != nil {
+		t.Fatalf("alpha help: %v", err)
+	}
+	if typeHelpCrispy != typeHelpNS {
+		t.Errorf("crispy type help differs from ns form:\ncrispy:\n%s\nns:\n%s", typeHelpCrispy, typeHelpNS)
+	}
+
+	targetHelpNS, err := run(t, "libs", "alpha", "build", "help")
+	if err != nil {
+		t.Fatalf("libs alpha build help: %v", err)
+	}
+	targetHelpCrispy, err := run(t, "alpha", "build", "help")
+	if err != nil {
+		t.Fatalf("alpha build help: %v", err)
+	}
+	if targetHelpCrispy != targetHelpNS {
+		t.Errorf("crispy target help differs from ns form:\ncrispy:\n%s\nns:\n%s", targetHelpCrispy, targetHelpNS)
+	}
+}
+
+// TestCrispyProjectWinsOverNamespace: with 2+ args an exact project-name
+// match beats the namespace reading of arg0. A project named exactly like a
+// namespace shadows `smith <ns> <target>`; the namespace listing itself is
+// untouched (1-arg tier order: namespace first).
+func TestCrispyProjectWinsOverNamespace(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+		"libs/libs":  {name: "libs", typ: "mock/std/lib@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {"echo build"}, "test": {"echo test"}},
+			deps:    map[string][]string{"build": {"test"}},
+		},
+	})
+	t.Chdir(repo)
+
+	// `smith libs build` runs PROJECT libs's build — not the namespace-wide
+	// build (which would also run alpha's).
+	out, runs := runWithFake(t, "libs", "build")
+	if !slices.Equal(runs, []string{"echo test", "echo build"}) {
+		t.Errorf("steps = %v, want project libs's own closure only", runs)
+	}
+	if !strings.Contains(out, "==> libs:build") || strings.Contains(out, "==> alpha:build") {
+		t.Errorf("output = %q, want project libs only (namespace-wide run must not run)", out)
+	}
+
+	// `smith libs` keeps its 1-arg meaning: the namespace listing.
+	out, err := run(t, "libs")
+	if err != nil {
+		t.Fatalf("libs: %v", err)
+	}
+	if out != "alpha\nlibs\n" {
+		t.Errorf("namespace listing = %q, want alpha/libs", out)
+	}
+}
+
+// TestCrispyNamespaceWideMeaningIntact: with no project named like the
+// namespace, `smith <ns> <target>` keeps its namespace-wide meaning.
+func TestCrispyNamespaceWideMeaningIntact(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+		"libs/beta":  {name: "beta", typ: "mock/std/other@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"test": {"echo test"}},
+		},
+		"mock/std/other@1": {
+			targets: map[string][]string{"build": {"echo build"}},
+		},
+	})
+	t.Chdir(repo)
+
+	out, runs := runWithFake(t, "libs", "test")
+	if !slices.Equal(runs, []string{"echo test"}) {
+		t.Errorf("steps = %v, want the test target across the namespace", runs)
+	}
+	if !strings.Contains(out, "ran 1, skipped 1 (type has no 'test' target)") {
+		t.Errorf("output missing skip summary:\n%s", out)
+	}
+}
+
+// TestCrispyTargetNameDoesNotShadowRepoWideRun: a project named like a
+// common target does not shadow the established repo-wide run...
+func TestCrispyTargetNameDoesNotShadowRepoWideRun(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+		"libs/build": {name: "build", typ: "mock/std/notarget@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {"echo build"}, "test": {"echo test"}},
+			deps:    map[string][]string{"build": {"test"}},
+		},
+		"mock/std/notarget@1": {
+			targets: map[string][]string{"test": {"echo test"}},
+		},
+	})
+	t.Chdir(repo)
+
+	out, runs := runWithFake(t, "build")
+	if !slices.Equal(runs, []string{"echo test", "echo build"}) {
+		t.Errorf("steps = %v, want alpha's build closure (repo-wide run)", runs)
+	}
+	if !strings.Contains(out, "ran 1, skipped 1 (type has no 'build' target)") {
+		t.Errorf("output missing skip summary:\n%s", out)
+	}
+}
+
+// ...but when NO project declares the target, a bare project name lists that
+// project's targets instead of a useless error.
+func TestCrispyBareProjectNameListsTargets(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/build": {name: "build", typ: "mock/std/notarget@1"},
+	}, map[string]typeSpec{
+		"mock/std/notarget@1": {
+			targets: map[string][]string{"test": {"echo test"}},
+		},
+	})
+	t.Chdir(repo)
+
+	out, err := run(t, "build")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if out != "test\n" {
+		t.Errorf("output = %q, want the project build's target listing", out)
+	}
+}
+
+// TestCrispyCommandWordShadowedBySubcommand: cobra routes top-level command
+// names before the positional grammar, so a project named like a command
+// word ("tree") is shadowed by the command — `smith tree` prints the
+// discovered project tree (annotated with the type), not the project's
+// target listing.
+func TestCrispyCommandWordShadowedBySubcommand(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+		"libs/tree":  {name: "tree", typ: "mock/std/lib@1"},
+	}, nil)
+	t.Chdir(repo)
+
+	out, err := run(t, "tree")
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	if !strings.Contains(out, "tree") || !strings.Contains(out, "(mock/std/lib@1)") {
+		t.Errorf("output = %q, want the tree command's project tree (a target listing would be \"build\\ntest\\n\")", out)
+	}
+
+	// The project itself stays reachable through the namespace grammar.
+	out, err = run(t, "libs", "tree", "list")
+	if err != nil {
+		t.Fatalf("libs tree list: %v", err)
+	}
+	if out != "build\n" {
+		t.Errorf("targets = %q, want build", out)
+	}
+}
+
+// TestCrispyUnknownArg0: unknown names keep the established error style —
+// the 2-arg fallthrough suggests `smith list`; the 1-arg repo-wide form is
+// unchanged.
+func TestCrispyUnknownArg0(t *testing.T) {
+	repo := t.TempDir()
+	twoLibsFixture(t, repo)
+	t.Chdir(repo)
+
+	_, err := run(t, "frobnicate", "extra")
+	if err == nil || !strings.Contains(err.Error(), `unknown command "frobnicate" for "smith"`) ||
+		!strings.Contains(err.Error(), `smith list`) {
+		t.Fatalf("error = %v, want unknown-command error suggesting smith list", err)
+	}
+
+	_, err = run(t, "frobnicate")
+	if err == nil || !strings.Contains(err.Error(), `no project in this repository has a "frobnicate" target`) {
+		t.Fatalf("error = %v, want unchanged repo-wide unknown-target error", err)
+	}
+}
+
+// TestCrispyMultiType: the rewrite is plain name resolution, so a multi-type
+// project works ns-free with the grouped listing and cross-type targets.
+func TestCrispyMultiType(t *testing.T) {
+	repo := t.TempDir()
+	multiTypeFixture(t, repo)
+	t.Chdir(repo)
+
+	out, err := run(t, "alpha", "list")
+	if err != nil {
+		t.Fatalf("alpha list: %v", err)
+	}
+	want := "mock/std/lib@1\n\nbuild\ntest\n\nmock/std/docs@1\n\ndocs -- build the docs\n"
+	if out != want {
+		t.Errorf("multi-type listing = %q, want %q", out, want)
+	}
+
+	_, runs := runWithFake(t, "alpha", "docs")
+	if !slices.Equal(runs, []string{"echo docs"}) {
+		t.Errorf("steps = %v, want the docs target from the second type", runs)
+	}
+}
+
+// TestCrispyRootLevelProject: a project whose smith.yml sits directly at the
+// repo root (Dir ".") has no namespace segment; the rewrite synthesizes "."
+// and the ordinary machinery keeps working.
+func TestCrispyRootLevelProject(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo,
+		map[string]manifestSpec{"libs/placeholder": {name: "placeholder", typ: "mock/std/lib@1"}},
+		nil)
+	// Re-root discovery at the repo root: replace the seeded roots with "."
+	// and put the manifest directly at the repo root.
+	repoYML := filepath.Join(repo, ".smith", "repo.yml")
+	data, err := os.ReadFile(repoYML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := strings.Replace(string(data), "    - libs\n    - services\n", "    - .\n", 1)
+	if replaced == string(data) {
+		t.Fatal("test setup: seeded project_roots not found in repo.yml")
+	}
+	if err := os.WriteFile(repoYML, []byte(replaced), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, "libs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "smith.yml"), []byte("version: 1\nname: rootproj\ntype: mock/std/lib@1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	out, runs := runWithFake(t, "rootproj", "build")
+	if !slices.Equal(runs, []string{"echo build"}) {
+		t.Errorf("steps = %v, want rootproj's build", runs)
+	}
+	if !strings.Contains(out, "==> rootproj:build") {
+		t.Errorf("output missing node header:\n%s", out)
+	}
+
+	out, err = run(t, "rootproj", "list")
+	if err != nil {
+		t.Fatalf("rootproj list: %v", err)
+	}
+	if out != "build\n" {
+		t.Errorf("targets = %q, want build", out)
+	}
+
+	// The bare 1-arg form lists its targets too (no project declares a
+	// "rootproj" target).
+	out, err = run(t, "rootproj")
+	if err != nil {
+		t.Fatalf("rootproj: %v", err)
+	}
+	if out != "build\n" {
+		t.Errorf("bare listing = %q, want build", out)
+	}
+}

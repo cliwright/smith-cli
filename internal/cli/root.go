@@ -4,10 +4,8 @@
 package cli
 
 import (
-	"fmt"
 	"io"
 	"os"
-	"slices"
 
 	"github.com/spf13/cobra"
 )
@@ -63,11 +61,13 @@ func stdout(cmd *cobra.Command) io.Writer {
 	return cmd.OutOrStdout()
 }
 
-// dispatch handles invocations that did not match a subcommand: namespace
-// grammar (list projects, list targets, run targets), then the repo-wide
-// target form. Subcommand names stay reserved — cobra routes them before
-// this runs, so a namespace named "sync" is shadowed (documented, not coded
-// around).
+// dispatch handles invocations that did not match a subcommand: reserved
+// synthetic namespaces first (repo, services — routed before anything
+// name-based, since attachments/services share the project-name space), then
+// the positional grammar (namespaces, namespace-free project addressing, the
+// repo-wide target run) via dispatchPositional. Subcommand names stay
+// reserved — cobra routes them before this runs, so a project named "sync"
+// is shadowed by the sync command (documented, not coded around).
 func dispatch(cmd *cobra.Command, args []string) error {
 	contextFlag, _ := cmd.Flags().GetBool("context")
 	if len(args) == 0 && !contextFlag {
@@ -91,12 +91,5 @@ func dispatch(cmd *cobra.Command, args []string) error {
 	if args[0] == servicesRootName {
 		return rc.dispatchServices(cmd, args[1:])
 	}
-	if slices.Contains(rc.namespaces(), args[0]) {
-		return rc.dispatchNamespace(cmd, args[0], args[1:])
-	}
-	if len(args) == 1 {
-		// smith <target> — run the target repo-wide.
-		return rc.runTarget(cmd, args[0], rc.projects, "this repository", "")
-	}
-	return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+	return rc.dispatchPositional(cmd, args)
 }

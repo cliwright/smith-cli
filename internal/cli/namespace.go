@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -336,6 +337,88 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 	return rc.executePlan(cmd, plan)
 }
 
+// projectNamespace is the namespace the namespace-free rewrite dispatches a
+// project under: the first path segment of its Dir relative to the repo
+// root. A project sitting directly at the repo root has Dir "." and no
+// namespace segment; "." is synthesized as its namespace, which is safe
+// because the dispatcher uses ns only to scope projectsIn (Dir "." matches
+// exactly that one project) and for display strings — listTargets, help, and
+// runSingle all operate on the resolved project, not the namespace.
+func projectNamespace(p discovery.Project) string {
+	return strings.Split(p.Dir, "/")[0]
+}
+
+// declaresTarget reports whether any discovered project's composed types
+// declare target. Types resolve through the lock-verified cache, so a path
+// that goes on to run pays nothing extra.
+func (rc *repoContext) declaresTarget(target string) (bool, error) {
+	for _, p := range rc.projects {
+		rt, err := rc.typeFor(p)
+		if err != nil {
+			return false, err
+		}
+		if _, ok := rt.ByTarget[target]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// dispatchPositional handles "smith <arg0> ..." once the reserved synthetic
+// namespaces (repo, services) and cobra subcommands are ruled out. It adds
+// namespace-free project addressing ("crispy" targets) as a pre-dispatch
+// rewrite on top of the namespace grammar, sharing one precedence rule with
+// the dispatcher below: an EXACT name match wins over the grammatical
+// reading of the same position.
+//
+// Precedence for the first positional argument (arg0):
+//
+//   - 2+ args: an exact PROJECT-name match wins over the NAMESPACE reading
+//     of arg0 — PROJECT WINS, symmetric with the TARGET WINS rule inside
+//     dispatchNamespace. `smith auth build` runs project auth's build even
+//     if a namespace "auth" existed; `smith libs build` keeps its
+//     namespace-wide meaning only while no project is named "libs". The
+//     rewrite derives the namespace from the project's Dir (first path
+//     segment relative to the repo root) and re-dispatches [name, rest...]
+//     through the ordinary namespace machinery, so listTargets, help, and
+//     runSingle keep working unchanged.
+//   - 1 arg: a known namespace lists its projects; next a bare target name
+//     keeps its established repo-wide meaning — a project named like a
+//     common target (e.g. "build") does NOT shadow `smith build`; only when
+//     no project declares the target does a bare project name list that
+//     project's targets.
+//
+// Matching is exact (project names are unique repo-wide); no fuzzy or
+// prefix matching. Unknown arg0 errors keep the established style.
+func (rc *repoContext) dispatchPositional(cmd *cobra.Command, args []string) error {
+	if len(args) >= 2 {
+		if p, ok := projectByName(rc.projects, args[0]); ok {
+			return rc.dispatchNamespace(cmd, projectNamespace(p), args)
+		}
+	}
+	if slices.Contains(rc.namespaces(), args[0]) {
+		return rc.dispatchNamespace(cmd, args[0], args[1:])
+	}
+	if len(args) == 1 {
+		// smith <target> — run the target repo-wide. When no project
+		// declares the target and arg0 is itself a project name, listing
+		// that project's targets beats a useless error (see the tier
+		// order above).
+		has, err := rc.declaresTarget(args[0])
+		if err != nil {
+			return err
+		}
+		if !has {
+			if p, ok := projectByName(rc.projects, args[0]); ok {
+				return rc.listTargets(cmd, p)
+			}
+		}
+		return rc.runTarget(cmd, args[0], rc.projects, "this repository", "")
+	}
+	return fmt.Errorf("unknown command %q for %q (see \"smith list\" for namespaces)",
+		args[0], cmd.CommandPath())
+}
+
 // dispatchNamespace handles "smith <ns> ..." — the confirmed grammar:
 //
 //	smith <ns>                 list projects (same as "<ns> list")
@@ -346,6 +429,10 @@ func (rc *repoContext) dispatchRepo(cmd *cobra.Command, rest []string) error {
 //	smith <ns> <name> <target> run target on that project
 //	smith <ns> <name> <target> help  target help (help/<target>.md + rendered steps)
 //	smith <ns> <target>        run target on every project in the ns that declares it
+//
+// dispatchPositional also feeds the namespace-free rewrite into this
+// dispatcher: [name, rest...] of a uniquely named project re-dispatched
+// under its directory's first path segment (see projectNamespace).
 func (rc *repoContext) dispatchNamespace(cmd *cobra.Command, ns string, rest []string) error {
 	out := stdout(cmd)
 	nsProjects := rc.projectsIn(ns)
