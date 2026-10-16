@@ -364,59 +364,102 @@ func (rc *repoContext) declaresTarget(target string) (bool, error) {
 	return false, nil
 }
 
-// dispatchPositional handles "smith <arg0> ..." once the reserved synthetic
-// namespaces (repo, services) and cobra subcommands are ruled out. It adds
-// namespace-free project addressing ("crispy" targets) as a pre-dispatch
-// rewrite on top of the namespace grammar, sharing one precedence rule with
-// the dispatcher below: an EXACT name match wins over the grammatical
-// reading of the same position.
-//
-// Precedence for the first positional argument (arg0):
+// routeKind is how a positional invocation classifies after reserved
+// keywords (repo, services) and cobra subcommands are ruled out. The run
+// path and the --context view share this classification so both honor the
+// same precedence rules.
+type routeKind int
+
+const (
+	routeUnknown     routeKind = iota // matches nothing known
+	routeNamespace                    // namespace-scoped grammar: ns + rest
+	routeBareTarget                   // 1 arg: a target declared by some project (repo-wide reading)
+	routeBareProject                  // 1 arg: a bare project name (no project declares it as a target)
+)
+
+// positionalRoute is resolvePositional's result. For routeNamespace, ns and
+// rest are the normalized [namespace, args-after...] view: a project match
+// rewrites rest to the full args ([name, rest...]) under its directory's
+// namespace; a namespace match keeps rest = args[1:]. For the bare 1-arg
+// routes, rest is the single argument.
+type positionalRoute struct {
+	kind    routeKind
+	ns      string            // routeNamespace: the namespace to dispatch under
+	rest    []string          // routeNamespace: args after the namespace; bare routes: the single arg
+	project discovery.Project // routeBareProject: the resolved project
+}
+
+// resolvePositional classifies a positional invocation (args is non-empty;
+// bare `smith` and `smith --context` are handled by the callers before this)
+// into a positionalRoute, defining the arg0 precedence in exactly one place
+// for the run path and the --context view:
 //
 //   - 2+ args: an exact PROJECT-name match wins over the NAMESPACE reading
 //     of arg0 — PROJECT WINS, symmetric with the TARGET WINS rule inside
-//     dispatchNamespace. `smith auth build` runs project auth's build even
-//     if a namespace "auth" existed; `smith libs build` keeps its
-//     namespace-wide meaning only while no project is named "libs". The
-//     rewrite derives the namespace from the project's Dir (first path
-//     segment relative to the repo root) and re-dispatches [name, rest...]
-//     through the ordinary namespace machinery, so listTargets, help, and
-//     runSingle keep working unchanged.
-//   - 1 arg: a known namespace lists its projects; next a bare target name
-//     keeps its established repo-wide meaning — a project named like a
-//     common target (e.g. "build") does NOT shadow `smith build`; only when
-//     no project declares the target does a bare project name list that
-//     project's targets.
+//     dispatchNamespace. The rewrite derives the namespace from the
+//     project's Dir (first path segment relative to the repo root) and
+//     re-dispatches [name, rest...] through the ordinary namespace
+//     machinery, so listTargets, help, runSingle, and the context views keep
+//     working unchanged.
+//   - 1 arg: a known namespace wins (namespace grammar, e.g. its project
+//     listing); next a bare target name keeps its established repo-wide
+//     meaning — a project named like a common target (e.g. "build") does
+//     NOT shadow it; only then does a bare project name resolve to that
+//     project (each path renders it its own way: the run path lists its
+//     targets, --context prints its environment).
 //
 // Matching is exact (project names are unique repo-wide); no fuzzy or
-// prefix matching. Unknown arg0 errors keep the established style.
-func (rc *repoContext) dispatchPositional(cmd *cobra.Command, args []string) error {
+// prefix matching.
+func (rc *repoContext) resolvePositional(args []string) (positionalRoute, error) {
 	if len(args) >= 2 {
 		if p, ok := projectByName(rc.projects, args[0]); ok {
-			return rc.dispatchNamespace(cmd, projectNamespace(p), args)
+			return positionalRoute{kind: routeNamespace, ns: projectNamespace(p), rest: args}, nil
 		}
 	}
 	if slices.Contains(rc.namespaces(), args[0]) {
-		return rc.dispatchNamespace(cmd, args[0], args[1:])
+		return positionalRoute{kind: routeNamespace, ns: args[0], rest: args[1:]}, nil
 	}
 	if len(args) == 1 {
-		// smith <target> — run the target repo-wide. When no project
-		// declares the target and arg0 is itself a project name, listing
-		// that project's targets beats a useless error (see the tier
-		// order above).
 		has, err := rc.declaresTarget(args[0])
 		if err != nil {
-			return err
+			return positionalRoute{}, err
 		}
-		if !has {
-			if p, ok := projectByName(rc.projects, args[0]); ok {
-				return rc.listTargets(cmd, p)
-			}
+		if has {
+			return positionalRoute{kind: routeBareTarget, rest: args}, nil
 		}
-		return rc.runTarget(cmd, args[0], rc.projects, "this repository", "")
+		if p, ok := projectByName(rc.projects, args[0]); ok {
+			return positionalRoute{kind: routeBareProject, rest: args, project: p}, nil
+		}
 	}
-	return fmt.Errorf("unknown command %q for %q (see \"smith list\" for namespaces)",
-		args[0], cmd.CommandPath())
+	return positionalRoute{kind: routeUnknown, rest: args}, nil
+}
+
+// dispatchPositional handles "smith <arg0> ..." once the reserved synthetic
+// namespaces (repo, services) and cobra subcommands are ruled out: the run
+// path's view of resolvePositional's routes (see there for the precedence
+// rules). Namespace routes run through dispatchNamespace unchanged; a bare
+// project name lists its targets; an unknown 1-arg name falls through to
+// the repo-wide run so its error stays the established one.
+func (rc *repoContext) dispatchPositional(cmd *cobra.Command, args []string) error {
+	route, err := rc.resolvePositional(args)
+	if err != nil {
+		return err
+	}
+	switch route.kind {
+	case routeNamespace:
+		return rc.dispatchNamespace(cmd, route.ns, route.rest)
+	case routeBareProject:
+		return rc.listTargets(cmd, route.project)
+	case routeBareTarget:
+		return rc.runTarget(cmd, route.rest[0], rc.projects, "this repository", "")
+	default:
+		if len(args) == 1 {
+			// Preserve the established repo-wide unknown-target error.
+			return rc.runTarget(cmd, args[0], rc.projects, "this repository", "")
+		}
+		return fmt.Errorf("unknown command %q for %q (see \"smith list\" for namespaces)",
+			args[0], cmd.CommandPath())
+	}
 }
 
 // dispatchNamespace handles "smith <ns> ..." — the confirmed grammar:

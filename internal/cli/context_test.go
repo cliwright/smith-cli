@@ -202,3 +202,121 @@ func TestContextNamespaceNeedsProjectOrTarget(t *testing.T) {
 		t.Errorf("libs --context error = %v", err)
 	}
 }
+
+// Crispy addressing for --context: dispatchContext shares resolvePositional
+// with the run path, so a uniquely named project is addressable without its
+// namespace and the views are byte-identical to the namespace forms.
+
+// TestContextCrispyProjectView: `smith alpha --context` is the project
+// environment view — the run path's bare-project tier rendered as a view
+// instead of a target listing.
+func TestContextCrispyProjectView(t *testing.T) {
+	repo := contextFixture(t)
+	t.Chdir(repo)
+
+	nsOut, err := run(t, "libs", "alpha", "--context")
+	if err != nil {
+		t.Fatalf("libs alpha --context: %v", err)
+	}
+	out, err := run(t, "alpha", "--context")
+	if err != nil {
+		t.Fatalf("alpha --context: %v", err)
+	}
+	if out != nsOut {
+		t.Errorf("crispy project view differs from ns form:\ncrispy:\n%s\nns:\n%s", out, nsOut)
+	}
+	if !strings.Contains(out, "SMITH_PROJECT=alpha") ||
+		!strings.Contains(out, "SMITH_TARGET=<per target>") {
+		t.Errorf("project view missing computed markers:\n%s", out)
+	}
+}
+
+// TestContextCrispyProjectWithTarget: `smith alpha build --context` is the
+// per-(project, target) view; excess args after the target and unknown
+// targets behave exactly like the namespace form.
+func TestContextCrispyProjectWithTarget(t *testing.T) {
+	repo := contextFixture(t)
+	t.Chdir(repo)
+
+	nsOut, err := run(t, "libs", "alpha", "build", "--context")
+	if err != nil {
+		t.Fatalf("libs alpha build --context: %v", err)
+	}
+	out, err := run(t, "alpha", "build", "--context")
+	if err != nil {
+		t.Fatalf("alpha build --context: %v", err)
+	}
+	if out != nsOut {
+		t.Errorf("crispy target view differs from ns form:\ncrispy:\n%s\nns:\n%s", out, nsOut)
+	}
+	if !strings.Contains(out, "SMITH_TARGET=build") {
+		t.Errorf("SMITH_TARGET not concrete:\n%s", out)
+	}
+
+	// Error parity with the namespace form, including excess args.
+	if _, err := run(t, "alpha", "nope", "--context"); err == nil ||
+		!strings.Contains(err.Error(), `has no target "nope"`) {
+		t.Errorf("unknown target error = %v, want has-no-target naming targets", err)
+	}
+	_, nsErr := run(t, "libs", "alpha", "build", "extra", "--context")
+	_, crispyErr := run(t, "alpha", "build", "extra", "--context")
+	if (nsErr == nil) != (crispyErr == nil) ||
+		(nsErr != nil && nsErr.Error() != crispyErr.Error()) {
+		t.Errorf("excess-args error = %v, want the ns form's error %v", crispyErr, nsErr)
+	}
+}
+
+// TestContextCrispyProjectWinsOverNamespace: 2+ args resolve PROJECT WINS
+// for the context view too; the 1-arg namespace meaning is untouched.
+func TestContextCrispyProjectWinsOverNamespace(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+		"libs/libs":  {name: "libs", typ: "mock/std/lib@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {
+			targets: map[string][]string{"build": {"echo build"}},
+			env:     map[string]string{"REGISTRY": "type-registry"},
+		},
+	})
+	t.Chdir(repo)
+
+	// `smith libs alpha --context`: project "libs" wins over the namespace
+	// reading, so "alpha" is read as its target.
+	_, err := run(t, "libs", "alpha", "--context")
+	if err == nil || !strings.Contains(err.Error(), `project "libs" (type mock/std/lib@1) has no target "alpha"`) {
+		t.Fatalf("error = %v, want PROJECT WINS reading alpha as project libs's target", err)
+	}
+
+	// The project is still reachable explicitly, ns-free.
+	out, err := run(t, "libs", "build", "--context")
+	if err != nil {
+		t.Fatalf("libs build --context: %v", err)
+	}
+	if !strings.Contains(out, "SMITH_PROJECT=libs") || !strings.Contains(out, "SMITH_TARGET=build") {
+		t.Errorf("project view for project libs missing markers:\n%s", out)
+	}
+
+	// 1 arg: the namespace tier still wins over the project.
+	if _, err := run(t, "libs", "--context"); err == nil ||
+		!strings.Contains(err.Error(), "needs a project or a target") {
+		t.Errorf("libs --context error = %v, want the namespace-tier error", err)
+	}
+}
+
+// TestContextCrispyUnknownName: unknown names keep the established error
+// style — a bare undeclared name reads as a repo-wide target, and excess
+// args after an unknown arg0 are "unexpected arguments".
+func TestContextCrispyUnknownName(t *testing.T) {
+	repo := contextFixture(t)
+	t.Chdir(repo)
+
+	if _, err := run(t, "frobnicate", "--context"); err == nil ||
+		!strings.Contains(err.Error(), `no project in this repository has a "frobnicate" target`) {
+		t.Errorf("error = %v, want the repo-wide unknown-target error", err)
+	}
+	if _, err := run(t, "frobnicate", "extra", "--context"); err == nil ||
+		!strings.Contains(err.Error(), `--context: unexpected arguments "frobnicate extra"`) {
+		t.Errorf("error = %v, want unexpected-arguments", err)
+	}
+}

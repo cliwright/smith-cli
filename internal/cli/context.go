@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -54,19 +53,37 @@ func (rc *repoContext) resolveEnvOrigin(cmd *cobra.Command) (value, origin strin
 }
 
 // dispatchContext routes `smith --context ...`: print the resolved
-// environment for the addressed scope instead of running anything.
+// environment for the addressed scope instead of running anything. It
+// shares resolvePositional with the run path, so namespace-free project
+// addressing and the precedence rules (PROJECT WINS for 2+ args; 1-arg
+// namespace → repo-wide target → bare project) behave exactly as execution;
+// only the rendered view differs — a bare project name prints its
+// environment where the run path would list its targets.
 func (rc *repoContext) dispatchContext(cmd *cobra.Command, args []string) error {
-	switch {
-	case len(args) == 0:
+	if len(args) == 0 {
+		// Bare `smith --context` — the repo-level view.
 		return rc.printRepoContext(cmd)
-	case args[0] == "repo":
+	}
+	if args[0] == "repo" {
 		return rc.dispatchRepoContext(cmd, args[1:])
-	case slices.Contains(rc.namespaces(), args[0]):
-		return rc.dispatchNamespaceContext(cmd, args[0], args[1:])
-	case len(args) == 1:
-		// smith <target> --context — every project in the repo that declares it.
-		return rc.printTargetContext(cmd, args[0], rc.projects, "this repository")
+	}
+	route, err := rc.resolvePositional(args)
+	if err != nil {
+		return err
+	}
+	switch route.kind {
+	case routeNamespace:
+		return rc.dispatchNamespaceContext(cmd, route.ns, route.rest)
+	case routeBareProject:
+		return rc.printProjectContext(cmd, route.project, "", false)
+	case routeBareTarget:
+		return rc.printTargetContext(cmd, route.rest[0], rc.projects, "this repository")
 	default:
+		if len(args) == 1 {
+			// An undeclared bare name renders the repo-wide target
+			// view's error — the same one a run reports.
+			return rc.printTargetContext(cmd, args[0], rc.projects, "this repository")
+		}
 		return fmt.Errorf("--context: unexpected arguments %q", strings.Join(args, " "))
 	}
 }
