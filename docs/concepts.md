@@ -1,125 +1,101 @@
 # Core concepts
 
-Five nouns explain almost everything Smith does: **repo**, **project**,
-**type**, **target**, **registry**. One verb — *run* — plus a custody chain
-that keeps behavior honest.
+## Repository
 
-## Repo
+A Smith repository is any directory that contains `.smith/repo.yml`. Smith
+finds the repo root by walking up from where you run it, so you can call
+`smith` from any directory inside the repo. The config declares the
+[project roots](discovery.md), the [registries](registries.md), the
+[repo targets](#repo-targets-attachments), and repo-wide settings such as
+`tools` and `dotenv`.
 
-The unit of Smith operation: a directory containing `.smith/repo.yml`. Every
-smith command resolves upward to the nearest repo root. The repo config
-declares:
+## Projects and the manifest
 
-- `workspace.project_roots` — where Smith looks for projects (no recursive
-  `node_modules` walks; only declared roots are traversed)
-- `registries` — ordered sources for types and templates (`git:` GitHub URLs
-  or local `path:` trees, first match wins)
-- `repo_targets` — optional repo-level attachments (see below)
-- `tools`, `dotenv`, `smith_env` — repo-wide knobs
-
-## Project
-
-A directory under a declared root containing a `smith.yml`:
+A project is a directory with a `smith.yml`. Smith reads the name and type
+from the manifest, not from the directory name, and project names must be
+unique across the repo. The full field reference is in
+[The smith.yml manifest](smith-yml.md); the short version:
 
 ```yaml
 version: 1
-name: payments                 # unique across the repo
-type: python/astral/lib@1      # what it is (string, or an array — see below)
-working_dir: project           # optional: where steps run (project|repo)
-dotenv: true                   # optional: load this project's dotenv/ dir
-params:                        # optional: overrides for type-declared params
-  config_path: ci/pyproject.toml
-environment:                   # optional: extra env for this project's steps
-  PYTHONWARNDEFAULTENCODING: "1"
-depends_on:                    # optional: project-level dependencies
-  - auth                       # sugar: auth's build before my build
-  - project: database
-    targets: [test, lint]      # run these on the dependency…
-    before: [build]            # …before these run here (default: [build])
+name: payments
+type: python/astral/lib@1
+depends_on: [auth]
+params:
+  python_version: "3.13"
 ```
 
-The manifest declares identity and dependencies — never build commands.
-*What*, not *how*.
+The manifest declares what the project is. It never says how to build it —
+the type owns the commands.
 
-**Multi-type projects.** `type:` may be a list:
+## Namespaces
 
-```yaml
-type:
-  - python/astral/lib@1
-  - repo/std/psenv@1     # adds env.get / env.put tooling targets
-```
+A namespace is the first path segment of a project root. `libs/auth` lives
+in namespace `libs`. Namespaces give you addressing (`smith libs auth
+test`) and grouping (`smith libs test` runs `test` on every project in
+`libs` that has one), but they carry no behavior. Two namespaced names are
+always unique, so most of the time you can drop the namespace: `smith auth
+test` works because project names are unique repo-wide. See
+[Running targets](running-targets.md).
 
-All targets from all listed types are available on the project. Target name
-collisions across the types are a **loud error at load** — by design, because
-targets are verbs: a compatible type solves a different problem (`scan`,
-`env.get`), it doesn't re-litigate `build`. `SMITH_TYPE_DIR` always points at
-the *owning* type's installed directory, so type-shipped scripts resolve
-correctly.
+## Project types
 
-## Type
+A type is a versioned bundle of targets, named `language/flavor/kind`:
 
-A versioned bundle of behavior, distributed as `project-type.json`:
+- `language` — `python`, `docker`, `tofu`, …
+- `flavor` — the toolchain variant. Use `std` when the language has one
+  standard toolchain; otherwise name the variant (`astral`, `bake`).
+- `kind` — what the project is: `lib`, `service`, `image`, `module`, …
 
-```json
-{
-  "name": "python/astral/lib",
-  "version": 1,
-  "tools": ["python", "uv"],
-  "targets": {
-    "lint": { "description": "…", "steps": ["uv run ruff check ."] },
-    "test": ["uv run pytest"],
-    "build": ["uv build"]
-  },
-  "depends_on": { "build": ["lint", "test"] }
-}
-```
+`python/astral/lib@1` reads as "a Python library built with the Astral
+toolchain, version 1." Types compose a project from several types when
+their targets are disjoint; alternatives (bake vs. compose) stay separate
+flavors. See [Project types](project-types.md).
 
-Steps are Go templates (`{{.param}}`, `{{.SMITH_REPO_ROOT}}`, …) rendered
-against declared params and reserved computed vars; `missingkey=error` means
-typos fail at load, not mid-run. Types may also declare `params` (string
-knobs with defaults) and `environment` (env vars for steps).
+## Targets
 
-Authoring types is a first-class workflow — see [Authoring project types](authoring-types.md).
+A target is a named list of shell commands. Types define them; you run
+them. Names match `^[a-z][a-z0-9-]*$` with one optional dot segment, so
+tooling types can group related targets: `env.get`, `env.put`. A target may
+carry a one-line description, which shows up in `smith <name> list`.
 
-## Target
+## Dependencies
 
-A named verb on a project (`build`, `test`, `plan`, `env.get`). Running a
-target means: run its dependencies (type-level `depends_on` first, then
-project-level), then each step in order via `sh -c`. First non-zero exit
-fails the run; skipped projects are reported, not hidden.
+Two mechanisms feed one graph:
 
-Two conveniences target names support:
+- **Type-level `depends_on`** wires targets inside one type: "our `test`
+  runs after our `build`".
+- **Manifest `depends_on`** wires projects: `- auth` means auth's `build`
+  runs before this project's `build`; the explicit form
+  `{project, targets, before}` names any target pair.
 
-- **One dot segment** — tooling types namespace targets (`state.list`,
-  `env.get`); the dotted name is an opaque single token everywhere.
-- **Descriptions** — types annotate targets (`≤80` chars); projects list them
-  via `smith <project> list`.
+When you run `smith shop-api build`, Smith builds the transitive closure —
+all dependencies of `build`, in topological order, each node once. Cycles
+and references to missing targets are hard errors.
 
-## Registry and the custody chain
+## Registries, locks, and custody
 
-Types ship in registries as **ingots**: a packed tar of `project-type.json` +
-`scripts/` + `help/`, plus a `.sha256` sidecar. `smith sync` downloads the
-ingot + sidecar (exactly two GETs per type for GitHub sources), verifies the
-hash, records it in `.smith/lock.json`, and unpacks into
-`.smith/types/<name>@v<N>/`.
+Types and templates come from [registries](registries.md) listed in
+`repo.yml`. A registry serves each type as an *ingot* (a packed archive)
+plus a `.sha256` sidecar. Custody runs in three steps, and each step checks
+the previous one:
 
-The chain of custody is enforced at load, and a mismatch anywhere is a loud
-error pointing at `smith sync` — never a silent content swap:
+1. **Sidecar.** The publisher hashes the ingot.
+2. **Lock.** `smith sync` verifies the fetched ingot against the sidecar
+   and pins its hash in `.smith/lock.json`.
+3. **Installed copy.** On every run, Smith checks that the ingot in
+   `.smith/types/` matches the lock and that the unpacked files match the
+   ingot.
 
-```
-sidecar (publisher) → lock (sync) → installed ingot + unpacked tree (load)
-```
+Any mismatch is a loud error that points at `smith sync`. Smith never runs
+a type that has changed behind your back.
 
-Version must match in path and file; a published type is immutable (a change
-means a new version). Registries are ordered in `repo.yml` — a local `path:`
-tree can shadow a remote one, which is the development escape hatch.
+## Repo targets (attachments)
 
-## Repo-level attachments (`repo` namespace)
-
-`repo_targets` in repo.yml bind aliases to `repo/<flavor>/<kind>@<version>`
-types — synthetic manifests whose directory is the repo root, run through the
-ordinary target machinery. They answer "commands that operate on the repo as
-a whole" (a uv workspace sync, a docs build):
+Some jobs belong to the repo, not to a project: lint everything, roll
+credentials, tear down a dev stack. `repo_targets` in `repo.yml` bind an
+alias to a `repo/<flavor>/<kind>` type, and Smith runs it against the repo
+root as a synthetic project:
 
 ```yaml
 repo_targets:
@@ -128,38 +104,28 @@ repo_targets:
 ```
 
 ```sh
-smith repo python sync
+smith repo python lint
 ```
 
-`repo` is a reserved namespace; bare `smith <target>` never includes
-attachments.
+Attachments never join a bare `smith <target>` run; you address them
+explicitly under the reserved `repo` namespace.
 
 ## Services
 
-A service is pure composition — a named bundle of projects, not a type. A
-`services/<name>.yml` file lists components and optionally maps their targets
-onto the closed service vocabulary (`build, test, lint, push, plan, deploy,
-destroy`):
+A service is a named set of projects with one command for the whole set.
+You define it in a `services/*.yml` file:
 
 ```yaml
 version: 1
 name: shop
 components:
-  - project: api
-  - project: worker
-    targets: { deploy: push }   # component's `push` implements service `deploy`
+  - project: shop-api
+  - project: payments
 ```
 
-```sh
-smith services shop build     # runs build on the component set, deps first
-smith services shop graph     # the component dependency view
-```
-
-Ordering always comes from project-level `depends_on`; `services` is a
-reserved namespace shadowing any directory literally named `services`.
-
-## Where to next
-
-- [Running targets](running-targets.md) — the command grammar in detail
-- [Environments & dotenv](environments.md) — the `--env` model
-- [Authoring project types](authoring-types.md) — write your own behavior
+Service targets come from a closed vocabulary — `build`, `test`, `lint`,
+`push`, `plan`, `deploy`, `destroy`. `smith services shop deploy` runs each
+component's `deploy` (or the target it maps to `deploy`), ordering by the
+projects' own `depends_on`. Components without the target are skipped and
+reported. `smith services shop graph` shows the component graph;
+`graph deploy` previews the execution order without running anything.

@@ -1,112 +1,106 @@
-# Authoring project types
+# Author a project type
 
-Types are how behavior is shared. If your org builds Python libs one way, you
-write `python/<flavor>/lib@1` once and every lib project in every repo gets
-`build`, `test`, `lint` for free — versioned, hash-pinned, and upgradeable on
-your schedule.
+A project type is the encoding of "how we build X". This page walks from
+an empty directory to a published type. The field reference is
+[Project types](project-types.md); here we cover the workflow.
 
-## A type in 30 lines
-
-```json
-{
-  "name": "python/astral/lib",
-  "version": 1,
-  "description": "Python library on the Astral toolchain (uv, ruff)",
-  "tools": ["python", "uv"],
-  "working_dir": "project",
-  "params": {
-    "config_path": { "default": "pyproject.toml", "description": "ruff config location" }
-  },
-  "targets": {
-    "lint":   { "description": "Run ruff",   "steps": ["uv run ruff check --config '{{.config_path}}' ."] },
-    "test":   { "description": "Run pytest", "steps": ["uv run pytest -c '{{.config_path}}'"] },
-    "build":  { "description": "Build sdist/wheel", "steps": ["uv build"] }
-  },
-  "depends_on": { "build": ["lint", "test"] }
-}
-```
-
-Field essentials:
-
-- `name` — `language/flavor/kind`. Flavor is **mandatory**: `std` when the
-  language has one standard toolchain, otherwise an org-unique string
-  (`astral`, `aws-trivy`). Versions are immutable; a change means a new
-  version directory.
-- `tools` — BYOT declaration, checked by `smith doctor`.
-- `working_dir` — `project` (default) or `repo`.
-- `targets` — name → steps (bare array or `{description ≤80 chars, steps}`).
-  Steps are `sh -c` command strings, Go templates with `missingkey=error`
-  (dry-rendered at load). One dot segment is allowed in target names for
-  tooling types (`env.get`).
-- `depends_on` — target dependency map, validated at load. Never cross-type.
-- `params` / `environment` — string knobs. Params need defaults; manifests
-  may override but not declare.
-- `capabilities` — informational enum (`buildable`, `testable`, …).
-
-The reserved template vars: `SMITH_REPO_ROOT`, `SMITH_PROJECT`,
-`SMITH_PROJECT_DIR`, `SMITH_TYPE_DIR` (the owning type's installed dir —
-use it to reach type-shipped `scripts/`), and `SMITH_CLI_ARGS`. `$SMITH_ENV`
-and `$SMITH_TARGET` are subprocess-only — reference them as shell vars.
-
-## Scaffold it
+## 1. Scaffold
 
 ```sh
 smith new smith/type --version 1
 ```
 
-Prompts for the name segments and renders
-`<language>/<flavor>/<kind>/v<N>/project-type.json` into a `types/` root
-(appended to `project_roots` on first use). Smith post-checks the result and
-prints the next step. (The output is a type, not a project — no `smith.yml`.)
+Answer the prompts for language, flavor, kind, and version. Smith renders
+the `smith/type` template into the `types/` root as a registry-layout tree
+(`types/python/acme/lib/v1/…`) and checks that the scaffolded
+`project-type.json` agrees with where it landed. `types/` is added to
+`workspace.project_roots` if needed.
 
-## The dev loop: local registry, no publish needed
+You can also create the tree by hand — a type is just a directory that
+looks like this:
 
-Point your repo at a local registry tree and consume your own type
-immediately:
+```text
+types/python/acme/lib/v1/
+├── project-type.json
+├── scripts/
+│   └── publish.sh          # optional
+└── help/
+    ├── project.md          # optional
+    └── build.md            # optional
+```
+
+## 2. Write the definition
+
+Edit `project-type.json`. Keep these rules in mind; Smith enforces all of
+them at load, and `smelt` enforces the position rules:
+
+- `name` must equal the last three path segments
+  (`python/acme/lib`), and `version` must equal the `v<N>` directory.
+- `tools` must list every executable your steps call. This is the BYOT
+  contract; `smith doctor` checks it.
+- Every parameter needs a `default`. Params are string-only and lowercase,
+  so they can never collide with `SMITH_*` variables.
+- Steps and environment values are `{{.templates}}` with
+  `missingkey=error`. Smith renders the whole type at load, so a typo
+  fails loudly at `sync` time, not mid-build.
+- Put long commands in `scripts/` and call them as
+  `{{.SMITH_TYPE_DIR}}/scripts/publish.sh`. Scripts ride the ingot, so the
+  type stays self-contained — never reference another type's files.
+
+A type's `depends_on` may only wire its own targets. Cross-project wiring
+belongs in manifests.
+
+## 3. Test locally with a `path` registry
+
+You do not need to publish anything to try a type. In the repo that should
+consume it, add a local registry and list it first:
 
 ```yaml
-# .smith/repo.yml
 registries:
-  - name: local
-    types:
-      path: types
+  - name: dev
+    types: { path: types }               # your in-repo tree, read in place
+  - name: cliwright
+    types:     { git: https://github.com/cliwright/smith-project-types }
+    templates: { git: https://github.com/cliwright/smith-project-templates }
 ```
+
+Create a test project with a manifest that refs your type, then:
 
 ```sh
-# iterate:
-$EDITOR types/python/acme/lib/v1/project-type.json
-smith smelt --path types/python/acme/lib/v1    # validate + pack ingot + sidecar
-smith sync                                     # install into .smith/types/
+smith sync        # installs your type straight off disk
+smith <project> build
+smith <project> build --env dev
 ```
 
-Then inspect what you built: `smith types python/acme/lib@1`,
-`smith <project> list`, `smith <project> <target> help`, and
-`smith <project> <target> --context`.
+Because local sources and git sources share the fallback logic, an
+unpublished type syncs off disk while everything else still comes from
+GitHub.
 
-## Help pages
+## 4. Pack with `smelt`
 
-Ship `help/project.md` (project-level help) and `help/<target>.md` (one per
-target) next to `project-type.json`. Smith composes generated content —
-resolved params, rendered steps, vars used — with your markdown for
-`smith <project> help` and `smith <project> <target> help`. Missing pages are
-fine; write them for anything with a non-obvious env model or flags.
+```sh
+smith smelt --path types/python/acme/lib/v1
+```
 
-## Publish
+`smelt` checks the registry invariants (directory name ↔ file name,
+`v<N>` ↔ `"version"`), packs the directory into
+`python-acme-lib@v1.ingot` (everything except sidecars and old artifacts),
+and writes the `.sha256` sidecar. Re-run it any time; it overwrites.
 
-1. `smith smelt --path <type-dir>` — packs `<flat-name>.ingot` (project-type.json
-   + `scripts/` + `help/`) and writes its `.sha256` sidecar; enforces that
-   name/version in the file match the registry position.
-2. Move the version tree into the registry repo; run its `task publish`.
-3. Consumers `smith sync`. Custody is verified at load:
-   **sidecar → lock → installed ingot + unpacked tree**; any mismatch is a
-   hard error pointing at `smith sync`.
+## 5. Publish
 
-## Conventions that keep multi-type repos sane
+Copy the version directory — `project-type.json`, its sidecar, the ingot,
+its sidecar — into your registry repo, commit, push. That is the whole
+release. Consumers pick the type up with `smith sync`; the lock pins the
+hash the first time it installs.
 
-- **Targets are verbs.** Collisions across a manifest's type list fail loudly
-  at load — compatible types own `scan`/`env.get`, never `build`.
-- **Steps are POSIX `sh`.** No bashisms; portable types run anywhere.
-- **Fail early.** Dry-render catches template typos at load;
-  `${VAR:?message}` catches missing runtime selectors before the tool runs.
-- **Data variation = params; structural variation = new flavor.** No
-  per-project target overrides, on purpose.
+Published versions do not change. Fix a bug by copying the tree to `v2`,
+bumping `"version": 2`, and smelting again. Consumers upgrade by editing
+their `smith.yml` refs when they are ready — the old version keeps working
+for everyone else.
+
+## Iterate
+
+The loop is short: edit, `smelt --path …`, `smith sync` in the consumer,
+run. When the type is stable, move the version directory to the shared
+registry repo and delete the local one.

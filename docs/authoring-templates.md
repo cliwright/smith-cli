@@ -1,79 +1,81 @@
-# Authoring project templates
+# Author a project template
 
-`smith new` scaffolds projects from [cookiecutter](https://cookiecutter.readthedocs.io/)
-templates living in a templates registry. Templates are how "what a project
-looks like on day one" is shared — the rendered project comes with a
-hand-editable `smith.yml` already pointing at the right type.
+A template is a cookiecutter directory that Smith can render into a new
+project. This page covers the parts of the contract that involve Smith;
+everything else is standard cookiecutter.
 
-## Layout
+## Where templates live
 
-Templates are addressed **two-part** — `<language>/<kind>/v<N>` (the flavor
-never appears in the template path; variation between flavors lives *inside*
-the template):
+In a templates repo, templates sit at `<language>/<kind>/v<N>`:
 
-```
-python/
-└── lib/
-    └── v1/
-        ├── cookiecutter.json
-        ├── hooks/
-        │   └── post_gen_project.py    # optional: prune/rename per choices
-        └── {{ cookiecutter.project_name }}/
-            ├── pyproject.toml
-            ├── README.md
-            ├── src/…
-            └── smith.yml              # rendered, then hand-edited
+```text
+smith-project-templates/
+├── python/lib/v1/
+│   ├── cookiecutter.json
+│   ├── {{cookiecutter.pypi_package_name}}/
+│   │   ├── smith.yml
+│   │   ├── src/ …
+│   │   └── tests/ …
+│   └── hooks/post_gen_project.py     # optional
+├── docker/image/v1/
+└── smith/type/v1/
 ```
 
-The rendered `smith.yml` is a starting point — Smith deliberately does not
-guess project names, types, or params for you beyond the template's choices.
+The `v<N>` directory is the version `smith new --version N` selects.
+
+## The contract with Smith
+
+1. **Rendering must produce a directory with a `smith.yml`.** Smith checks
+   nothing else; the manifest inside the template should carry a valid
+   `version`, `name` (typically `{{cookiecutter.project_slug}}`), and
+   `type` ref. Keep the name pattern `^[a-z][a-z0-9-]*$` — underscores in
+   slugs will not validate.
+2. **Type refs in the shipped `smith.yml` use `@N`** (`python/astral/lib@1`),
+   while the type's registry path is `…/v1/`. Cookiecutter's `{% raw %}`
+   escaping keeps Go template expressions (`{{.param}}`) intact through
+   rendering when you need them in generated files.
+3. **Flavor variation lives inside the template, not in the path.** A
+   `docker/image` template can ask "bake or compose?" in
+   `cookiecutter.json` and prune or rename files in a post-gen hook for
+   the choice not taken. The template path never carries the flavor.
+
+Smith runs cookiecutter for you:
+
+```text
+cookiecutter <source> --directory <language>/<kind>/v<N> --output-dir <repo root>
+```
+
+`cookiecutter` must be on `PATH` (BYOT; `smith doctor` checks it), and it
+runs interactively, so template questions are answered in your terminal.
+
+## Test locally
+
+Point a registry's `templates` source at your local checkout and list it
+first:
 
 ```yaml
-version: 1
-name: {{ cookiecutter.project_name }}
-type: python/astral/lib@1      # rendered; hand-edit before first sync
+registries:
+  - name: dev
+    templates: { path: /absolute/path/to/smith-project-templates }
+  - name: cliwright
+    templates: { git: https://github.com/cliwright/smith-project-templates }
+    types:     { git: https://github.com/cliwright/smith-project-types }
 ```
 
-## Choices and post-gen hooks
-
-Variation inside a template is ordinary cookiecutter: `cookiecutter.json`
-choices plus a `post_gen_project.py` hook that prunes or renames files based
-on the answers. The `tofu/infra/v1` template uses this for the cloud
-provider — one template renders AWS-, GCP-, or Azure-shaped projects, and the
-hook generates the per-provider `environments/*.tfvars` files:
-
-```json
-{
-  "project_name": "my-infra",
-  "cloud_provider": ["aws", "gcp", "azure"]
-}
+```sh
+smith new python/lib --version 1
 ```
 
-## Adding a template
+One caveat to know while testing: `smith new` uses the first registry that
+has a `templates` source and does not try the next one when the template
+is missing there. Keep your dev registry first until the template is
+published.
 
-1. Create the tree under `<language>/<kind>/v<N>/` in the templates repo.
-2. Iterate locally: point your repo's `.smith/repo.yml` at a local clone —
-   `smith new` honors a `templates.path` source (the dev escape hatch):
+`templates.path` is passed to cookiecutter as written. Absolute paths
+always work; relative paths work when you run `smith` from the repo root.
 
-   ```yaml
-   registries:
-     - name: local
-       templates:
-         path: ../smith-project-templates
-   ```
+## Publish
 
-3. Render-check with `smith new <language>/<kind> --version N` in a scratch
-   repo. (Known limitation: `smith new` tries only the **first** templates
-   source today — keep your local source first while developing.)
-
-## Relationship to types
-
-Templates and types are paired but independent: the template's rendered
-`smith.yml` references a type ref (`tofu/std-whoiam/infra@1`), and `smith
-sync` fetches it from the **types** registry. Template paths need not mirror
-the three-part type names they pair with — `tofu/infra/v1` (template)
-renders projects for `tofu/std-whoiam/infra@1` (type).
-
-Rule of thumb: the **template** decides files and defaults (structure); the
-**type** decides commands (behavior). When behavior diverges structurally
-(bake vs. compose), that's a new type flavor — not a new template knob.
+Push the version directory to the templates repo. `smith new` reads
+templates straight from the git source, so there is no pack or smelt step
+— the directory itself is the artifact.

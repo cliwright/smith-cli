@@ -1,85 +1,109 @@
 # Getting started
 
-## Install Smith
+## Install
 
-**With Go:**
+Install instructions are on the way. Smith is a single static binary: one
+executable, no daemon, no network access except when it fetches types from
+a registry.
 
-```sh
-go install github.com/cliwright/smith/cmd/smith@latest
-```
-
-**From source:**
-
-```sh
-git clone git@github.com:cliwright/smith-cli.git
-cd smith-cli
-go build -o bin/smith ./cmd/smith   # or: task build
-bin/smith version                   # put bin/ on PATH if you like
-```
-
-Smith is a single static binary. It needs no daemon, no daemon socket, and no
-network except when syncing types from a remote registry.
-
-## Your first repo
+## A repo in five commands
 
 ```sh
 mkdir smith-shop && cd smith-shop
 smith init
 ```
 
-`smith init` writes `.smith/repo.yml` seeded with the conventional project
-roots (`libs`, `tools`, `services`, `images`) and a starter registry
-configuration. Edit `workspace.project_roots` to match how your repo is laid
-out — Smith only ever looks where you tell it to.
-
-## Your first project
+`smith init` writes `.smith/repo.yml`. It seeds four project roots —
+`libs`, `tools`, `services`, `images` — and one registry that points at the
+public type and template repos. Edit the roots later to match your layout;
+Smith only looks where you tell it to.
 
 ```sh
 smith new python/lib --version 1
-# answer the prompts — the project lands in libs/<name>/
 ```
 
-`smith new` renders a [cookiecutter template](authoring-templates.md), writes
-the project's `smith.yml`, appends the project root to `repo.yml` if needed,
-and records the new project's type in the sync set.
-
-## Sync and see
+`smith new` asks a few questions and scaffolds a project into `libs/`. The
+template writes the project's `smith.yml`, which points at the project type
+`python/astral/lib@1`.
 
 ```sh
-smith sync     # fetch pinned types: ingot + hash sidecar per type
-smith tree     # the discovered repo
+smith sync
 ```
 
-The lock file `.smith/lock.json` and the unpacked types under `.smith/types/`
-are meant to be **checked in** — anyone who clones your repo builds with zero
-setup. (Prefer a per-repo cache? Gitignore `.smith/types/` instead; Smith
-reads either, and `smith sync` rebuilds.)
-
-## Run a target
+`smith sync` fetches that type: a packed artifact (an *ingot*) plus a hash
+sidecar. It installs the type into `.smith/types/` and pins its hash in
+`.smith/lock.json`. Check both in. A colleague who clones the repo can build
+without running `sync` first.
 
 ```sh
-smith tree --show-deps    # what depends on what
-smith <project> list      # this project's targets, with descriptions
-smith <project> test      # run it — project dependencies first
-smith <project> test --env dev   # with an environment selected
+smith tree
 ```
 
-Targets run their steps in order via `sh -c`, in the project directory, and
-stop at the first failure. Namespaces are optional when names are unique —
-see [Running targets](running-targets.md) for the full grammar, including
-services and repo-level attachments.
-
-## Check your toolbox
+```text
+smith-shop
+├── libs
+│   └── payments      (python/astral/lib@1)
+```
 
 ```sh
-smith doctor
+smith payments list    # what can I run?
+smith payments test    # run it
 ```
 
-`doctor` probes every tool declared by your repo's types (`--version`, BYOT —
-Smith never installs anything) and reports what's missing or broken.
+```text
+==> payments:test
+$ uv run pytest
+...
+```
+
+Targets run their steps with `sh`, in the project directory, in dependency
+order. A failing step stops the run.
+
+Add a second project that depends on the first, and Smith orders the graph
+for you:
+
+```yaml
+# services/shop-api/smith.yml
+version: 1
+name: shop-api
+type: python/astral/lib@1
+depends_on:
+  - payments        # payments' build runs before this project's build
+```
+
+```sh
+smith shop-api build     # builds payments first, then shop-api
+smith build              # every project with a build target, in order
+```
+
+## Key concepts
+
+**Project.** A directory with a `smith.yml`. The manifest declares the
+project's name, type, dependencies, and parameter values. It holds no
+build commands.
+
+**Project type.** A named, versioned bundle of targets, identified as
+`language/flavor/kind@version` (for example `python/astral/lib@1`). Types
+live in registries and install into `.smith/types/`.
+
+**Target.** A named list of shell commands inside a type, such as `build`,
+`test`, or `deploy`. You run targets, never individual steps.
+
+**Registry.** A source of types and templates. Your repo lists its
+registries in `.smith/repo.yml`, most remote first. `smith sync` fetches
+through them in order.
+
+**Lock.** `.smith/lock.json` pins the hash of every type your repo uses.
+Smith checks the installed copy against the lock on every run. A mismatch
+stops the run and points you at `smith sync`.
+
+**Tool.** An executable a type needs, such as `uv` or `docker`. Smith never
+installs tools; it expects them on your `PATH`. See
+[Bring your own tools](bring-your-own-tools.md).
 
 ## Where to next
 
-- [Core concepts](concepts.md) to understand what just happened
-- [Environments & dotenv](environments.md) for `--env`, dotenv overlays, and `--context`
-- [Passing arguments (--)](cli-args.md) to hand extra flags to underlying tools
+- [Core concepts](concepts.md) for the full model: namespaces, services,
+  repo targets, multi-type projects
+- [Running targets](running-targets.md) for the command grammar
+- [Environments](environments.md) for `--env`, dotenv files, and `--context`

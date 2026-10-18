@@ -2,105 +2,128 @@
 
 ## The grammar
 
-```sh
-smith <project> <target>          # the everyday form (crispy)
-smith <ns> <project> <target>     # namespaced form — always works
-smith <ns> list                   # projects in a namespace
-smith <project> list              # targets of one project
+Every run command follows one shape:
+
+```text
+smith <namespace> <project> <target>
 ```
 
-Smith classifies each argument position for you. `smith payments test` and
-`smith libs payments test` are the same command; the namespace is optional
-whenever the project name is unambiguous. With one argument, Smith tries, in
-order: a namespace (`smith libs`) → a repo-wide target run across all
-projects that implement it (`smith build` — see below) → a bare project
-listing.
-
-Every project command also takes the run flags: `--env NAME` (environment
-selector), `--context` (print the resolved environment instead of running),
-and `--` (extra args for the tool — see [Passing arguments](cli-args.md)).
-
-## Dependencies come along
-
-`smith api build` doesn't just build `api`. The run closure includes:
-
-1. **Type-level deps** — the type's `depends_on` (`build: [lint, test]`).
-2. **Project-level deps** — `depends_on` in each manifest (`auth` before
-   `api`'s build, …).
-
-Smith merges everything into a graph of `(project, target)` nodes, orders it
-topologically, runs it serially, and fails fast. Cycles and dangling targets
-are hard errors, not warnings. Projects that don't implement the requested
-target are skipped and reported — unless they're pulled in as prerequisites.
-
-A bare `smith build` runs the `build` target repo-wide: every project whose
-type implements `build`, with all cross-project dependencies honored. (Repo
-attachments never join bare runs.)
-
-## Listing what exists
+Project names are unique across the repo, so a uniquely named project does
+not need its namespace:
 
 ```sh
-smith list                 # namespaces + the reserved `repo`
-smith tree                 # discovered projects and their type refs
-smith tree --show-deps     # …plus the dependency edges
-smith <project> list       # targets, annotated with descriptions
+smith libs auth test    # namespaced
+smith auth test         # same thing
 ```
 
-For a multi-type project, `list` groups targets under per-type headings —
-you can always see which type owns which verb.
+Useful forms at a glance:
 
-## `list`, `help`, and `doctor`
+| Command | What it does |
+|---|---|
+| `smith` | Prints help |
+| `smith list` | Lists namespaces (the project roots) plus `repo` |
+| `smith <ns>` | Lists projects in the namespace |
+| `smith <name>` | Lists one project's targets |
+| `smith <name> list` | Same, explicit |
+| `smith <name> help` | Help for the project and its type |
+| `smith <name> <target> help` | Help for one target |
+| `smith <ns> <target>` | Runs the target on every project in the namespace that has it |
+| `smith <target>` | Runs the target repo-wide |
+| `smith repo <alias> <target>` | Runs an attachment (a repo-level target) |
+| `smith services <name> <target>` | Runs a service target across its components |
 
-- `smith <project> list` — targets and one-line descriptions.
-- `smith <project> help` / `smith <project> <target> help` — generated docs
-  (resolved vars, rendered steps) composed with the type's shipped
-  `help/*.md` markdown, piped through `glow` (if installed) and a pager
-  (`$SMITH_PAGER` > less/more > stdout).
-- `smith doctor` — BYOT health check: every tool declared anywhere in the
-  repo, probed with `--version`; non-zero exit when unhealthy.
-- `smith types` — browse the repo's installed types: what's pinned, what
-  mismatches, full detail per type.
+Target names may carry one dot segment (`env.get`, `env.put`), so tooling
+types can group related commands: `smith tooling env.get`.
 
-## Multi-type projects
+## How Smith reads your words
 
-```yaml
-# libs/client/smith.yml
-type:
-  - python/astral/lib@1     # build, test, lint, …
-  - acme/sso/headers@1      # headers.check, headers.fix
+When the first word after `smith` is not a command or a reserved keyword,
+Smith resolves it like this:
+
+- **Two or more words:** an exact project name wins. `smith libs build`
+  runs project `libs`'s `build` target if a project named `libs` exists;
+  otherwise `libs` reads as a namespace.
+- **One word:** namespace first, then a repo-wide target, then a project
+  name. `smith build` never gets shadowed by a project named `build`; it
+  still runs `build` everywhere.
+- **Reserved words:** `repo` and `services` route to their own grammars
+  and always win. `list` and `help` are reserved in grammar positions.
+  Command names (`sync`, `new`, `tree`, …) win over same-named projects.
+
+Exact matches only; there is no fuzzy guessing. When Smith cannot resolve
+your words, the error tells you what it knows: unknown targets list the
+available ones, unknown namespaces list their projects, and a dead end
+suggests `smith list`.
+
+## What a run looks like
+
+```text
+$ smith shop-api build
+==> payments:build
+$ uv build
+...
+==> shop-api:build
+$ uv build
+...
 ```
+
+Smith builds a plan before it runs anything:
+
+1. Start from every (project, target) pair you addressed.
+2. Add every dependency: the type's own `depends_on` wiring plus the
+   manifest's project dependencies, transitively.
+3. Sort the graph topologically; each node runs once.
+4. Run the steps of each node in order.
+
+Runs are serial and fail-fast: the first failing step stops the run and
+reports `<project>: <target>: sh: exited with status N`. Cycles
+(`dependency cycle: a:x -> b:y -> a:x`) and references to missing targets
+are hard errors before anything executes.
+
+Each step runs with `sh -c`, with your terminal attached, in the project
+directory — or the repo root when the type's `working_dir` is `repo` (a
+manifest may override this per project).
+
+Namespace-wide, repo-wide, and service runs skip projects that lack the
+target and say so at the end:
+
+```text
+ran 3, skipped 1 (type has no 'lint' target)
+```
+
+## Passing arguments: `--`
+
+Everything after a standalone `--` is captured verbatim and handed to the
+steps as one shell-quoted string, `$SMITH_CLI_ARGS`:
 
 ```sh
-smith client headers.check
+smith payments test -- -k refunds -x
 ```
 
-Targets from every listed type are available on the project. Name collisions
-across types fail loudly at load — that's the design: verbs are a shared
-namespace, so compatible types are built to complement, not collide. Tooling
-types conventionally namespace with one dot segment (`env.get`, `state.list`).
+Inside a step, `$SMITH_CLI_ARGS` expands to `-k refunds -x`. The value is
+also available as the template variable `{{.SMITH_CLI_ARGS}}`, always
+defined (empty when you pass nothing). Smith quotes the tokens so they
+survive the trip through `sh -c` intact. Use it to forward flags to the
+underlying tool without adding parameters to the type.
 
-## Services and attachments
+## Flags on run commands
 
-Service runs follow the same grammar under the reserved plural namespace:
+- `--env <name>` — select an [environment](environments.md). Overrides
+  `$SMITH_ENV` and the repo default.
+- `--context` — do not run; print the resolved environment for the
+  addressed project or target instead. Shares the run's rules and errors.
+- `--parallel N` — accepted for future use; today Smith warns and runs
+  serially.
+
+## Help without leaving the terminal
 
 ```sh
-smith services                 # list service compositions
-smith services shop            # show the component set
-smith services shop build      # run a service target across components
-smith services shop graph      # component dependency view (project-level)
-smith services shop graph build  # execution-order preview; nothing runs
+smith payments help        # the type: variables with your values, env, docs
+smith payments test help   # one target: rendered steps, vars used, docs
 ```
 
-Repo attachments under `repo`:
-
-```sh
-smith repo python sync         # run a repo-level target
-smith repo python list         # an attachment's targets
-```
-
-## Failure behavior
-
-Steps run in order; the first non-zero exit fails the target and the run.
-`--env`-required types should fail early and loudly — the idiomatic guard is
-`${SMITH_ENV:?…}` in the step — so mistakes surface before your tool runs,
-not inside it.
+Help output is markdown. Smith renders it with `glow` when `glow` is on
+your `PATH` (raw markdown otherwise) and pages it through `$SMITH_PAGER`,
+then `less -R`, then `more`, then plain stdout. The generated summary is
+built from your actual configuration; types can add their own pages under
+`help/` in the type directory.

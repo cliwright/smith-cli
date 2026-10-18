@@ -5,14 +5,21 @@ nav = [
   { "Introduction" = "index.md" },
   { "Getting started" = "getting-started.md" },
   { "Core concepts" = "concepts.md" },
-  { "Usage" = [
+  { "BYOT" = "bring-your-own-tools.md" },
+  { "Using smith" = [
     { "Running targets" = "running-targets.md" },
-    { "Environments & dotenv" = "environments.md" },
-    { "Passing arguments (--)" = "cli-args.md" }
+    { "Environments" = "environments.md" },
+    { "Project discovery" = "discovery.md" }
+  ] },
+  { "The pieces" = [
+    { "The smith.yml manifest" = "smith-yml.md" },
+    { "Project types" = "project-types.md" },
+    { "Project templates" = "templates.md" },
+    { "Registries & ingots" = "registries.md" }
   ] },
   { "Authoring" = [
     { "Project types" = "authoring-types.md" },
-    { "Project templates" = "authoring-templates.md" }
+    { "Templates" = "authoring-templates.md" }
   ] },
   { "Command reference" = "reference.md" }
 ]
