@@ -21,6 +21,7 @@ import (
 	"github.com/cliwright/smith/internal/runner"
 	"github.com/cliwright/smith/internal/service"
 	"github.com/cliwright/smith/internal/targetrun"
+	"github.com/cliwright/smith/internal/trust"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -661,12 +662,17 @@ func (rc *repoContext) resolveEnv(cmd *cobra.Command) (string, error) {
 	return value, err
 }
 
-// executePlan runs a built plan: it resolves the environment selector,
-// attaches the repo's dotenv opt-in and the invocation's "--" passthrough,
-// preflights dotenv loading (a hard error before anything runs when a
-// promised file is missing), and executes. Every plan path (project runs,
+// executePlan runs a built plan: it gates on the trust model (every type
+// the plan resolves must carry a valid trust marker, unless
+// SMITH_AUTO_TRUST=1), resolves the environment selector, attaches the
+// repo's dotenv opt-in and the invocation's "--" passthrough, preflights
+// dotenv loading (a hard error before anything runs when a promised file
+// is missing), and executes. Every plan path (project runs,
 // namespace/repo-wide runs, attachments, services) funnels through here.
 func (rc *repoContext) executePlan(cmd *cobra.Command, plan *targetrun.Plan) error {
+	if err := rc.requireTrust(plan); err != nil {
+		return err
+	}
 	env, err := rc.resolveEnv(cmd)
 	if err != nil {
 		return err
@@ -678,6 +684,81 @@ func (rc *repoContext) executePlan(cmd *cobra.Command, plan *targetrun.Plan) err
 		return err
 	}
 	return plan.Execute(context.Background(), nsExecRunner, rc.repoRoot, stdout(cmd))
+}
+
+// requireTrust is the execution gate: a plan whose types are not all
+// trusted refuses to run, before anything executes. A type is trusted when
+// its marker's hash matches the lock pin (custody was already verified
+// while the plan resolved, so the pin IS the installed artifact's hash);
+// a marker left over from different content reports Stale — trust means "I
+// vetted THIS code", not a name. SMITH_AUTO_TRUST=1 short-circuits the
+// gate; inspection commands never reach it.
+func (rc *repoContext) requireTrust(plan *targetrun.Plan) error {
+	if trust.Bypassed() {
+		return nil
+	}
+	lk, err := rc.lock()
+	if err != nil {
+		return err
+	}
+	type untrusted struct {
+		ref    string
+		detail string
+	}
+	var bad []untrusted
+	for _, refKey := range plan.TypeRefs() {
+		// TypeRefs are the canonical keys typeFor verified against the
+		// lock, so the pin lookup cannot miss; Parse cannot fail either.
+		pin := lk.Types[refKey]
+		ref, err := typeref.Parse(refKey)
+		if err != nil {
+			return fmt.Errorf("smith: trust: %w", err)
+		}
+		status, _, err := trust.Check(rc.repoRoot, ref, pin.Hash)
+		if err != nil {
+			return fmt.Errorf("smith: trust: %w", err)
+		}
+		switch status {
+		case trust.Untrusted:
+			bad = append(bad, untrusted{refKey,
+				fmt.Sprintf("(untrusted — installed from %s)", registrySourceLabel(rc.cfg, pin.Registry))})
+		case trust.Stale:
+			bad = append(bad, untrusted{refKey,
+				"(stale — content changed since it was trusted; re-vet and re-trust)"})
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	width := 0
+	for _, b := range bad {
+		if len(b.ref) > width {
+			width = len(b.ref)
+		}
+	}
+	lines := make([]string, len(bad))
+	for i, b := range bad {
+		lines[i] = fmt.Sprintf("  %-*s  %s", width, b.ref, b.detail)
+	}
+	return fmt.Errorf("smith: refusing to run: %d type(s) not trusted:\n%s\ninspect: smith <ns> <name> help   trust: smith trust <ref>   (or smith trust --all)",
+		len(bad), strings.Join(lines, "\n"))
+}
+
+// registrySourceLabel names a pin's registry for gate messages:
+// "registry \"cliwright\" via github" for git sources, "local registry
+// \"local\"" for path sources — or just the quoted name when the registry
+// is no longer configured.
+func registrySourceLabel(cfg *config.RepoConfig, name string) string {
+	for _, reg := range cfg.Registries {
+		if reg.Name != name {
+			continue
+		}
+		if reg.Types.Path != "" {
+			return fmt.Sprintf("local registry %q", name)
+		}
+		return fmt.Sprintf("registry %q via github", name)
+	}
+	return fmt.Sprintf("registry %q", name)
 }
 
 // warnParallel notes that --parallel is accepted but execution is serial.

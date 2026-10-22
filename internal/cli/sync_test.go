@@ -14,6 +14,7 @@ import (
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
+	"github.com/cliwright/smith/internal/trust"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -976,5 +977,171 @@ func TestSyncFetchesMultiTypeManifestRefs(t *testing.T) {
 	}
 	if !strings.Contains(out, "mock/std/docs@1: fetched from cliwright") {
 		t.Errorf("sync output missing the second ref's fetch line:\n%s", out)
+	}
+}
+
+// TestSyncAutoTrustsLocalSource: an ingot fetched from a local path
+// registry is trusted at install time — the marker is written against the
+// lock pin and the fenced .gitignore block keeps it per-user.
+func TestSyncAutoTrustsLocalSource(t *testing.T) {
+	f := newFakeRegistries(t)
+	useFakeRegistries(t, f) // the HTTP registry must never be contacted
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"},
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, nil)
+	writeLocalType(t, filepath.Join(repo, "types"), "python/acme/lib", 1, testTypeContent)
+	t.Chdir(repo)
+
+	out, err := run(t, "sync", "python/acme/lib@1")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "python/acme/lib@1: trusted (local source)") {
+		t.Errorf("output missing the auto-trust line:\n%s", out)
+	}
+
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := typeref.TypeRef{Name: "python/acme/lib", Version: 1}
+	status, m, err := trust.Check(repo, ref, lk.Types[ref.String()].Hash)
+	if err != nil || status != trust.Trusted {
+		t.Fatalf("marker status = %v, err = %v; want Trusted against the pin", status, err)
+	}
+	if m.User == "" {
+		t.Error("marker user is empty")
+	}
+
+	gitignore, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	if err != nil {
+		t.Fatalf("reading .gitignore: %v", err)
+	}
+	want := "# >>> smith trust >>>\n.smith/trust/\n# <<< smith trust <<<\n"
+	if string(gitignore) != want {
+		t.Errorf(".gitignore = %q, want the fenced block %q", gitignore, want)
+	}
+}
+
+// TestSyncRemoteSourceNotAutoTrusted: a fetch that falls through a missing
+// local tree to a remote git registry installs the same bytes but writes
+// no marker — remote publishers are never auto-trusted.
+func TestSyncRemoteSourceNotAutoTrusted(t *testing.T) {
+	f := newFakeRegistries(t)
+	f.serveType(t, "cliwright/types", "python/acme/lib", 1, testTypeContent)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"}, // empty tree: the fetch falls through to git
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, nil)
+	if err := os.MkdirAll(filepath.Join(repo, "types"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	out, err := run(t, "sync", "python/acme/lib@1")
+	if err != nil {
+		t.Fatalf("sync: %v\noutput:\n%s", err, out)
+	}
+	if strings.Contains(out, "trusted (local source)") {
+		t.Errorf("remote fetch auto-trusted:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(trust.Dir(repo), "python-acme-lib@v1.trusted")); !os.IsNotExist(err) {
+		t.Errorf("marker written for a remote source (stat err = %v)", err)
+	}
+}
+
+// TestSyncSourceTransitionMakesMarkerStale: content trusted from a local
+// source, re-synced from a remote source with changed bytes (via --force,
+// since the up-to-date shortcut would keep the old content), leaves the
+// surviving marker stale — the gate re-triggers.
+func TestSyncSourceTransitionMakesMarkerStale(t *testing.T) {
+	f := newFakeRegistries(t)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"},
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, map[string][2]string{
+		"libs/demo": {"demo", "python/acme/lib@1"},
+	})
+	writeLocalType(t, filepath.Join(repo, "types"), "python/acme/lib", 1, testTypeContent)
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync", "python/acme/lib@1"); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	ref := typeref.TypeRef{Name: "python/acme/lib", Version: 1}
+	marker := filepath.Join(trust.Dir(repo), "python-acme-lib@v1.trusted")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("local sync did not auto-trust: %v", err)
+	}
+
+	// The local tree stops serving the type; the remote now serves changed
+	// bytes for the same ref.
+	if err := os.RemoveAll(filepath.Join(repo, "types", "python", "acme", "lib", "v1")); err != nil {
+		t.Fatal(err)
+	}
+	const changed = `{"name":"python/acme/lib","version":1,"description":"churned","tools":["python","uv"],"targets":{"build":["uv build"]}}`
+	f.serveType(t, "cliwright/types", "python/acme/lib", 1, changed)
+	if _, err := run(t, "sync", "--force"); err != nil {
+		t.Fatalf("sync --force: %v", err)
+	}
+
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := lk.Types[ref.String()]
+	if pin.Registry != "cliwright" {
+		t.Errorf("pin.Registry = %q, want cliwright (the remote fallback)", pin.Registry)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker did not survive sync --force: %v", err)
+	}
+	status, _, err := trust.Check(repo, ref, pin.Hash)
+	if err != nil || status != trust.Stale {
+		t.Errorf("marker status = %v, err = %v; want Stale against the new pin", status, err)
+	}
+}
+
+// TestSyncUpToDateKeepsMarker: the up-to-date fast path rewrites nothing —
+// an existing marker stays trusted across a no-op sync.
+func TestSyncUpToDateKeepsMarker(t *testing.T) {
+	f := newFakeRegistries(t)
+	useFakeRegistries(t, f)
+
+	repo := t.TempDir()
+	writeSyncRepo(t, repo, []regEntry{
+		{"local", "path: types"},
+		{"cliwright", "git: https://github.com/cliwright/types"},
+	}, nil)
+	writeLocalType(t, filepath.Join(repo, "types"), "python/acme/lib", 1, testTypeContent)
+	t.Chdir(repo)
+
+	if _, err := run(t, "sync", "python/acme/lib@1"); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	out, err := run(t, "sync", "python/acme/lib@1")
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !strings.Contains(out, "up to date") {
+		t.Errorf("second sync output = %q, want up-to-date", out)
+	}
+	lk, err := lock.Load(lockPathIn(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := typeref.TypeRef{Name: "python/acme/lib", Version: 1}
+	status, _, err := trust.Check(repo, ref, lk.Types[ref.String()].Hash)
+	if err != nil || status != trust.Trusted {
+		t.Errorf("marker status = %v, err = %v; want Trusted after the no-op sync", status, err)
 	}
 }

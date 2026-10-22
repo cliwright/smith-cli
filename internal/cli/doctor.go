@@ -14,6 +14,8 @@ import (
 
 	"github.com/cliwright/smith/internal/discovery"
 	"github.com/cliwright/smith/internal/manifest"
+	"github.com/cliwright/smith/internal/trust"
+	"github.com/cliwright/smith/internal/typeref"
 )
 
 // errUnhealthy makes the doctor command exit non-zero without cobra printing
@@ -35,9 +37,11 @@ project's type tools, and every repo_targets attachment's type tools. Each
 tool is resolved with exec.LookPath and probed with "<tool> --version"; a
 probe that fails, times out, or returns nothing reports "version unknown".
 A type that cannot be loaded (not installed, hash mismatch) is reported as a
-finding — "run smith sync" — and the check continues with the rest.
+finding — "run smith sync" — and the check continues with the rest; an
+untrusted or stale type is a finding too (see "smith trust").
+SMITH_AUTO_TRUST=1 is reported when active — it bypasses the trust model.
 
-Exits non-zero when anything is missing or any type could not be checked.`,
+Exits non-zero when anything is missing or any finding was reported.`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true, // findings are the output; errUnhealthy only sets the exit code
@@ -58,6 +62,42 @@ func runDoctor(cmd *cobra.Command) error {
 	// project names, "repo", or "repo:<alias>".
 	needers := map[string][]toolNeeder{}
 	var warnings []string
+	// Trust findings follow the unloadable-type pattern: they never block
+	// the check, they are reported (once per ref, however many consumers
+	// share it) and make the run unhealthy.
+	trustWarned := map[string]bool{}
+	trustNotes := func(rtRefs []string, label string) {
+		if trust.Bypassed() {
+			return
+		}
+		lk, err := rc.lock()
+		if err != nil {
+			return // collect's typeFor already reported the unloadable types
+		}
+		for _, refKey := range rtRefs {
+			if trustWarned[refKey] {
+				continue
+			}
+			ref, err := typeref.Parse(refKey)
+			if err != nil {
+				return
+			}
+			status, _, err := trust.Check(rc.repoRoot, ref, lk.Types[refKey].Hash)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("cannot check trust for %s (%s): %v", refKey, label, err))
+				trustWarned[refKey] = true
+				continue
+			}
+			switch status {
+			case trust.Untrusted:
+				warnings = append(warnings, fmt.Sprintf("type %s (used by %s) is not trusted — vet it (smith <ns> <name> help), then: smith trust %s", refKey, label, refKey))
+				trustWarned[refKey] = true
+			case trust.Stale:
+				warnings = append(warnings, fmt.Sprintf("type %s (used by %s) is stale — content changed since it was trusted; re-vet and re-trust: smith trust %s", refKey, label, refKey))
+				trustWarned[refKey] = true
+			}
+		}
+	}
 
 	collect := func(label string, p discovery.Project) {
 		rt, err := rc.typeFor(p)
@@ -65,6 +105,7 @@ func runDoctor(cmd *cobra.Command) error {
 			warnings = append(warnings, fmt.Sprintf("cannot check tools for %s (%s): run smith sync", label, refsLabel(p.Manifest.Types)))
 			return
 		}
+		trustNotes(sortedKeys(rt.Dirs), label)
 		for _, t := range rt.Types {
 			for _, tool := range t.Tools {
 				addNeeder(needers, tool, label)
@@ -86,6 +127,9 @@ func runDoctor(cmd *cobra.Command) error {
 		collect("repo:"+a.Manifest.Name, a)
 	}
 
+	if trust.Bypassed() {
+		fmt.Fprintln(out, "SMITH_AUTO_TRUST=1 — trust model bypassed")
+	}
 	return reportDoctor(out, needers, warnings)
 }
 
@@ -113,8 +157,8 @@ func addNeeder(needers map[string][]toolNeeder, tool, needer string) {
 
 // reportDoctor probes every required tool and prints the findings: one line
 // per found tool, a "missing:" section, a "warnings:" section for unloadable
-// types, and a summary line. Returns errUnhealthy when anything is missing
-// or could not be checked.
+// types and trust findings, and a summary line. Returns errUnhealthy when
+// anything is missing or any warning was collected.
 func reportDoctor(out io.Writer, needers map[string][]toolNeeder, warnings []string) error {
 	tools := make([]string, 0, len(needers))
 	for tool := range needers {
@@ -149,7 +193,7 @@ func reportDoctor(out io.Writer, needers map[string][]toolNeeder, warnings []str
 
 	summary := fmt.Sprintf("doctor: %d ok, %d missing", ok, len(missing))
 	if len(warnings) > 0 {
-		summary += fmt.Sprintf(", %d type(s) could not be checked", len(warnings))
+		summary += fmt.Sprintf(", %d warning(s)", len(warnings))
 	}
 	fmt.Fprintln(out, summary)
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/projecttype"
+	"github.com/cliwright/smith/internal/trust"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -117,9 +118,9 @@ func TestTypesListingWithoutLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("types: %v", err)
 	}
-	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned]
-python/astral/lib@2  Python library, v2  [not pinned]
-repo/uv/workspace@1  uv workspace root environment  [not pinned]
+	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned, untrusted]
+python/astral/lib@2  Python library, v2  [not pinned, untrusted]
+repo/uv/workspace@1  uv workspace root environment  [not pinned, untrusted]
 `
 	if out != want {
 		t.Errorf("listing mismatch:\n%s\nwant:\n%s", out, want)
@@ -145,9 +146,9 @@ func TestTypesListingAnnotatesLockStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("types: %v", err)
 	}
-	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)  [pinned]
-python/astral/lib@2  Python library, v2  [not pinned]
-repo/uv/workspace@1  uv workspace root environment  [hash mismatch — run smith sync]
+	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)  [pinned, untrusted]
+python/astral/lib@2  Python library, v2  [not pinned, untrusted]
+repo/uv/workspace@1  uv workspace root environment  [hash mismatch — run smith sync, untrusted]
 `
 	if out != want {
 		t.Errorf("listing mismatch:\n%s\nwant:\n%s", out, want)
@@ -163,8 +164,8 @@ func TestTypesNameListsVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("types python/astral/lib: %v", err)
 	}
-	want := `1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned]
-2  Python library, v2  [not pinned]
+	want := `1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned, untrusted]
+2  Python library, v2  [not pinned, untrusted]
 `
 	if out != want {
 		t.Errorf("versions mismatch:\n%s\nwant:\n%s", out, want)
@@ -223,6 +224,7 @@ func TestTypesDetailWithoutLockShowsNotPinned(t *testing.T) {
   depends_on:
     build: lint, test
   status: not pinned
+  trust: untrusted
 `
 	if out != want {
 		t.Errorf("detail mismatch:\n%s\nwant:\n%s", out, want)
@@ -244,16 +246,16 @@ func TestTypesDetailInRepoShowsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("types repo/uv/workspace@1: %v", err)
 	}
-	if !strings.HasSuffix(out, "  status: pinned\n") {
-		t.Errorf("detail missing status line:\n%s", out)
+	if !strings.HasSuffix(out, "  status: pinned\n  trust: untrusted\n") {
+		t.Errorf("detail missing status/trust lines:\n%s", out)
 	}
 
 	out, err = run(t, "types", "python/astral/lib")
 	if err != nil {
 		t.Fatalf("types python/astral/lib: %v", err)
 	}
-	if !strings.Contains(out, "1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned]") ||
-		!strings.Contains(out, "2  Python library, v2  [not pinned]") {
+	if !strings.Contains(out, "1  Python library on the Astral toolchain (uv, ruff, ty)  [not pinned, untrusted]") ||
+		!strings.Contains(out, "2  Python library, v2  [not pinned, untrusted]") {
 		t.Errorf("versions missing not-pinned annotations:\n%s", out)
 	}
 }
@@ -315,5 +317,79 @@ func TestTypesDetailShowsTargetDescription(t *testing.T) {
 	}
 	if !strings.Contains(out, "    build:\n      description: build the wheel\n      uv build\n") {
 		t.Errorf("detail missing the target description line:\n%s", out)
+	}
+}
+
+// TestTypesListingAnnotatesTrust: the listing pairs custody with trust —
+// a marker matching the installed ingot annotates trusted, a missing
+// marker untrusted, a mismatched one stale.
+func TestTypesListingAnnotatesTrust(t *testing.T) {
+	repo := typesRepo(t)
+	installed := installStandardTypes(t, repo)
+	t.Chdir(repo)
+	lk := &lock.Lock{Version: 1, Types: map[string]lock.TypePin{
+		"python/astral/lib@1": {Registry: "cliwright", Hash: installed["python/astral/lib@1"]},
+		"python/astral/lib@2": {Registry: "cliwright", Hash: installed["python/astral/lib@2"]},
+		"repo/uv/workspace@1": {Registry: "cliwright", Hash: installed["repo/uv/workspace@1"]},
+	}}
+	if err := lock.Save(filepath.Join(repo, ".smith", "lock.json"), lk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trust.Write(repo, typeref.TypeRef{Name: "python/astral/lib", Version: 1}, installed["python/astral/lib@1"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trust.Write(repo, typeref.TypeRef{Name: "python/astral/lib", Version: 2},
+		"sha256:0000000000000000000000000000000000000000000000000000000000000000"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "types")
+	if err != nil {
+		t.Fatalf("types: %v", err)
+	}
+	want := `python/astral/lib@1  Python library on the Astral toolchain (uv, ruff, ty)  [pinned, trusted]
+python/astral/lib@2  Python library, v2  [pinned, stale]
+repo/uv/workspace@1  uv workspace root environment  [pinned, untrusted]
+`
+	if out != want {
+		t.Errorf("listing mismatch:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+func TestTypesDetailShowsTrust(t *testing.T) {
+	repo := typesRepo(t)
+	installed := installStandardTypes(t, repo)
+	t.Chdir(repo)
+	lk := &lock.Lock{Version: 1, Types: map[string]lock.TypePin{
+		"python/astral/lib@1": {Registry: "cliwright", Hash: installed["python/astral/lib@1"]},
+	}}
+	if err := lock.Save(filepath.Join(repo, ".smith", "lock.json"), lk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trust.Write(repo, typeref.TypeRef{Name: "python/astral/lib", Version: 1}, installed["python/astral/lib@1"]); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "types", "python/astral/lib@1")
+	if err != nil {
+		t.Fatalf("types: %v", err)
+	}
+	if !strings.HasSuffix(out, "  status: pinned\n  trust: trusted\n") {
+		t.Errorf("detail missing the trust line:\n%s", out)
+	}
+}
+
+func TestTypesBypassNote(t *testing.T) {
+	repo := typesRepo(t)
+	installStandardTypes(t, repo)
+	t.Chdir(repo)
+	t.Setenv("SMITH_AUTO_TRUST", "1")
+
+	out, err := run(t, "types")
+	if err != nil {
+		t.Fatalf("types: %v", err)
+	}
+	if !strings.HasPrefix(out, "SMITH_AUTO_TRUST=1 — trust model bypassed\n") {
+		t.Errorf("listing missing the bypass note:\n%s", out)
 	}
 }

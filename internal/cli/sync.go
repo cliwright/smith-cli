@@ -19,6 +19,7 @@ import (
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/projecttype"
 	syncpkg "github.com/cliwright/smith/internal/sync"
+	"github.com/cliwright/smith/internal/trust"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -168,7 +169,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		ft, registry, err := fetchWithFallback(context.Background(), client, bases, ref)
+		ft, base, err := fetchWithFallback(context.Background(), client, bases, ref)
 		if err != nil {
 			return err
 		}
@@ -176,11 +177,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		staged = append(staged, stagedInstall{path: dest, ref: ref, content: ft.Content})
-		lockState.Types[ref.String()] = lock.TypePin{Registry: registry, Hash: ft.Hash}
+		staged = append(staged, stagedInstall{path: dest, ref: ref, content: ft.Content, hash: ft.Hash, local: base.local != ""})
+		lockState.Types[ref.String()] = lock.TypePin{Registry: base.name, Hash: ft.Hash}
 		fetchedRefs = append(fetchedRefs, ref)
 		fetched++
-		fmt.Fprintf(out, "%s: fetched from %s\n", ref, registry)
+		fmt.Fprintf(out, "%s: fetched from %s\n", ref, base.name)
 	}
 
 	if fetched == 0 {
@@ -189,7 +190,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	// Every fetch succeeded: commit installs, union the new types' tools
-	// into repo.yml, then the lock (atomically).
+	// into repo.yml, then the lock (atomically). A type fetched from a
+	// local path registry is trusted at install time — its content came
+	// from the user's own disk, not a remote publisher; git sources are
+	// never auto-trusted. Marker failures are warnings only: the sync
+	// succeeded, and "smith trust <ref>" records the marker later.
 	for _, s := range staged {
 		if err := os.MkdirAll(s.path, 0o755); err != nil {
 			return fmt.Errorf("installing %s: %w", s.path, err)
@@ -203,6 +208,13 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 		// Migrate away from the pre-ingot flat install if one is present.
 		_ = os.Remove(filepath.Join(installRoot, legacyFlatPath(s.ref)))
+		if s.local {
+			if _, err := trust.Write(repoRoot, s.ref, s.hash); err != nil {
+				fmt.Fprintf(out, "warning: %s: could not record trust: %v (sync succeeded; run \"smith trust %s\" later)\n", s.ref, err, s.ref)
+			} else {
+				fmt.Fprintf(out, "  %s: trusted (local source)\n", s.ref)
+			}
+		}
 	}
 	repoYMLPath := filepath.Join(repoRoot, cacheDirName, repoYMLName)
 	added, err := unionFetchedTools(repoYMLPath, cfg, installRoot, fetchedRefs)
@@ -357,19 +369,22 @@ func registryBases(cfg *config.RepoConfig, repoRoot string) ([]namedBase, error)
 
 // fetchWithFallback tries each registry in priority order; only "not here"
 // (HTTP 404, or a missing file for a local source) moves on to the next.
-// When every registry misses, the error names the ref.
-func fetchWithFallback(ctx context.Context, client *http.Client, bases []namedBase, ref typeref.TypeRef) (*syncpkg.FetchedType, string, error) {
+// It returns the chosen registry so the caller can pin the lock with its
+// name and tell a local path source (auto-trusted at install time) from a
+// remote git one (never auto-trusted). When every registry misses, the
+// error names the ref.
+func fetchWithFallback(ctx context.Context, client *http.Client, bases []namedBase, ref typeref.TypeRef) (*syncpkg.FetchedType, namedBase, error) {
 	for _, b := range bases {
 		ft, err := fetchFrom(ctx, client, b, ref)
 		if errors.Is(err, syncpkg.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, "", err
+			return nil, namedBase{}, err
 		}
-		return ft, b.name, nil
+		return ft, b, nil
 	}
-	return nil, "", fmt.Errorf("type %s not found in any configured registry (check name/version or that it's published)", ref)
+	return nil, namedBase{}, fmt.Errorf("type %s not found in any configured registry (check name/version or that it's published)", ref)
 }
 
 // fetchFrom fetches one ref from one registry, local or HTTP.
@@ -384,6 +399,8 @@ type stagedInstall struct {
 	path    string // installed directory (.smith/types/<name>@v<N>)
 	ref     typeref.TypeRef
 	content []byte // ingot bytes
+	hash    string // the ingot's hash (the lock pin)
+	local   bool   // fetched from a local path registry (auto-trusted at install time)
 }
 
 // installRelDir is the installed directory of one type relative to the
@@ -401,7 +418,8 @@ func legacyFlatPath(ref typeref.TypeRef) string {
 
 // flatArtifactName is the ingot artifact file name inside the installed
 // directory (single file; the canonical <name>@v<N>.ingot with slashes
-// flattened).
+// flattened), delegating to typeref.FlatName — the single
+// flattened-naming rule, shared with the trust markers.
 func flatArtifactName(ref typeref.TypeRef) string {
-	return ingot.FileName(ref.Name, ref.Version)
+	return typeref.FlatName(ref) + ".ingot"
 }

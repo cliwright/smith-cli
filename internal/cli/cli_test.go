@@ -23,7 +23,7 @@ func TestRootHelpListsCommandTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	for _, want := range []string{"init", "new", "sync", "types", "doctor", "tree", "list", "--parallel"} {
+	for _, want := range []string{"init", "new", "sync", "types", "trust", "doctor", "tree", "list", "--parallel"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("root help missing %q:\n%s", want, out)
 		}

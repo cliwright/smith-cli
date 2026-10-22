@@ -909,3 +909,43 @@ func TestExecuteMultiTypeDependsOnWithinOwningType(t *testing.T) {
 		t.Errorf("steps = %v, want %v (owning type's test before its build)", got, want)
 	}
 }
+
+// TestPlanTypeRefs: the trust gate's accessor returns the sorted, deduped
+// union of every resolved type's refs — roots and dependency-closure
+// projects alike, shared refs reported once.
+func TestPlanTypeRefs(t *testing.T) {
+	projects := []discovery.Project{
+		mkProjectTypes("libs/alpha", "alpha", []string{"mock/std/lib@1", "mock/std/docs@1"},
+			manifest.Dependency{Project: "beta", Targets: []string{"build"}, Before: []string{"build"}}),
+		mkProject("libs/beta", "beta", "mock/std/lib@1"),
+	}
+	types := map[string]*projecttype.ProjectType{
+		"alpha": {
+			Name: "mock/std/lib", Version: 1, Description: "x", Tools: []string{"sh"},
+			Targets:    typedTargets(map[string][]string{"build": {"echo a"}}),
+			WorkingDir: projecttype.WorkingDirProject,
+		},
+	}
+	docsType := &projecttype.ProjectType{
+		Name: "mock/std/docs", Version: 1, Description: "x", Tools: []string{"sh"},
+		Targets:    typedTargets(map[string][]string{"docs": {"echo d"}}),
+		WorkingDir: projecttype.WorkingDirProject,
+	}
+	typeFor := func(p discovery.Project) (*Resolved, error) {
+		if p.Manifest.Name == "alpha" {
+			return resolvedOf("/repo/.smith/types", types["alpha"], docsType), nil
+		}
+		return resolvedOf("/repo/.smith/types", types["alpha"]), nil
+	}
+
+	plan, err := Build(projects, typeFor, []Node{{"alpha", "build"}}, "/repo", "")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got := plan.TypeRefs()
+	// mock/std/lib@1 is shared by alpha and beta and must appear once.
+	want := []string{"mock/std/docs@1", "mock/std/lib@1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("TypeRefs() = %v, want %v", got, want)
+	}
+}

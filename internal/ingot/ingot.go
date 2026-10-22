@@ -21,9 +21,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cliwright/smith/internal/typeref"
 )
 
 // refFormat is the "<name>@v<N>" base every ingot artifact derives from.
+// Note this is the DIRECTORY/artifact form ("@v1"), not the typeref key
+// form ("@1", see typeref.TypeRef.String) — RefName deliberately keeps it.
 const refFormat = "%s@v%d"
 
 // RefName is the canonical "<name>@v<N>" base name of a type version: the
@@ -35,9 +39,10 @@ func RefName(name string, version int) string {
 // FileName is the artifact file name: "<name>@v<N>.ingot" with slashes
 // flattened to dashes, so the ingot is a single file directly inside its
 // version directory (both in the registry and in the installed type
-// directory).
+// directory). The flattening delegates to typeref.FlatName — the single
+// flattened-naming rule, shared with the trust markers.
 func FileName(name string, version int) string {
-	return strings.ReplaceAll(RefName(name, version), "/", "-") + ".ingot"
+	return typeref.FlatName(typeref.TypeRef{Name: name, Version: version}) + ".ingot"
 }
 
 // SidecarName is the sidecar file name: "<flat-name>.ingot.sha256".

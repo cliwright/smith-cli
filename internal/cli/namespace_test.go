@@ -17,6 +17,7 @@ import (
 	"github.com/cliwright/smith/internal/projecttype"
 	"github.com/cliwright/smith/internal/runner"
 	"github.com/cliwright/smith/internal/targetrun"
+	"github.com/cliwright/smith/internal/trust"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -156,6 +157,19 @@ func writeDispatchRepo(t *testing.T, repo string, manifests map[string]manifestS
 	lk := &lock.Lock{Version: 1, Types: pins}
 	if err := lock.Save(filepath.Join(smithDir, "lock.json"), lk); err != nil {
 		t.Fatal(err)
+	}
+	// The fixture's types are trusted by default: most dispatch tests
+	// exercise execution, and the trust gate in executePlan refuses to run
+	// untrusted types. Tests that need an untrusted or stale type remove
+	// (or rewrite) the marker under .smith/trust afterwards.
+	for refKey, pin := range pins {
+		ref, err := typeref.Parse(refKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := trust.Write(repo, ref, pin.Hash); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

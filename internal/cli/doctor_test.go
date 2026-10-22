@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cliwright/smith/internal/config"
+	"github.com/cliwright/smith/internal/typeref"
 )
 
 // makeFakeTools installs executable shell scripts into a temp bin dir and
@@ -133,7 +134,7 @@ func TestDoctorUnloadableTypeIsAFinding(t *testing.T) {
 	}
 	// The rest was still checked.
 	if !strings.Contains(out, "smith-test-widget  widget 2.0  needed by: beta") ||
-		!strings.Contains(out, "doctor: 3 ok, 0 missing, 1 type(s) could not be checked") {
+		!strings.Contains(out, "doctor: 3 ok, 0 missing, 1 warning(s)") {
 		t.Errorf("output missing continued checks or summary:\n%s", out)
 	}
 }
@@ -172,4 +173,83 @@ func doctorFixtureRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+// TestDoctorUntrustedTypeIsAFinding: an untrusted type reports as a
+// warning (the doctor's established pattern — report, continue, exit
+// non-zero), naming the type, a consumer, and the trust command.
+func TestDoctorUntrustedTypeIsAFinding(t *testing.T) {
+	repo := doctorFixture(t)
+	makeFakeTools(t, map[string]string{
+		"cookiecutter":      `echo "fake-cc 1.0"`,
+		"smith-test-widget": `echo "widget 2.0"`,
+		"python":            `echo "python 3.12"`,
+		"uv":                `echo "uv 0.4"`,
+	})
+	t.Chdir(repo)
+	removeTrustMarker(t, repo, typeref.TypeRef{Name: "mock/std/other", Version: 1})
+
+	out, err := run(t, "doctor")
+	if !errors.Is(err, errUnhealthy) {
+		t.Fatalf("doctor error = %v, want errUnhealthy\noutput:\n%s", err, out)
+	}
+	for _, want := range []string{
+		"warnings:",
+		"type mock/std/other@1 (used by beta) is not trusted — vet it (smith <ns> <name> help), then: smith trust mock/std/other@1",
+		"doctor: 4 ok, 0 missing, 1 warning(s)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	// The untrusted type's tools were still checked.
+	if !strings.Contains(out, "smith-test-widget  widget 2.0  needed by: beta") {
+		t.Errorf("output missing the continued tool check:\n%s", out)
+	}
+}
+
+// TestDoctorTrustWarningDedup: one warning per untrusted ref, however many
+// consumers share it.
+func TestDoctorTrustWarningDedup(t *testing.T) {
+	repo := t.TempDir()
+	writeDispatchRepo(t, repo, map[string]manifestSpec{
+		"libs/alpha": {name: "alpha", typ: "mock/std/lib@1"},
+		"libs/beta":  {name: "beta", typ: "mock/std/lib@1"},
+	}, map[string]typeSpec{
+		"mock/std/lib@1": {targets: map[string][]string{"build": {"echo build"}}},
+	})
+	t.Chdir(repo)
+	removeTrustMarker(t, repo, typeref.TypeRef{Name: "mock/std/lib", Version: 1})
+	makeFakeTools(t, map[string]string{"sh": `echo "sh 1.0"`})
+
+	out, err := run(t, "doctor")
+	if !errors.Is(err, errUnhealthy) {
+		t.Fatalf("doctor error = %v, want errUnhealthy\noutput:\n%s", err, out)
+	}
+	if got := strings.Count(out, "mock/std/lib@1 (used by"); got != 1 {
+		t.Errorf("%d trust warnings for the shared ref, want 1:\n%s", got, out)
+	}
+}
+
+func TestDoctorBypassNote(t *testing.T) {
+	repo := doctorFixture(t)
+	makeFakeTools(t, map[string]string{
+		"cookiecutter":      `echo "fake-cc 1.0"`,
+		"smith-test-widget": `echo "widget 2.0"`,
+		"python":            `echo "python 3.12"`,
+		"uv":                `echo "uv 0.4"`,
+	})
+	t.Chdir(repo)
+	t.Setenv("SMITH_AUTO_TRUST", "1")
+
+	out, err := run(t, "doctor")
+	if err != nil {
+		t.Fatalf("doctor: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "SMITH_AUTO_TRUST=1 — trust model bypassed") {
+		t.Errorf("output missing the bypass note:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "doctor: 4 ok, 0 missing\n") {
+		t.Errorf("bypassed doctor must stay healthy and skip trust findings:\n%s", out)
+	}
 }

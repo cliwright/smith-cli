@@ -52,3 +52,11 @@ func Parse(s string) (TypeRef, error) {
 func (r TypeRef) String() string {
 	return r.Name + "@" + strconv.Itoa(r.Version)
 }
+
+// FlatName is the type version's flattened artifact-stem name:
+// "<name>@v<N>" with slashes replaced by dashes (python-astral-lib@v1) —
+// the ingot file name without its ".ingot" suffix and the trust marker
+// stem. The single flattened-naming rule, shared by sync and trust.
+func FlatName(r TypeRef) string {
+	return strings.ReplaceAll(fmt.Sprintf("%s@v%d", r.Name, r.Version), "/", "-")
+}

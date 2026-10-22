@@ -44,3 +44,18 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
+
+func TestFlatName(t *testing.T) {
+	for _, tt := range []struct {
+		ref  TypeRef
+		want string
+	}{
+		{TypeRef{Name: "python/astral/lib", Version: 1}, "python-astral-lib@v1"},
+		{TypeRef{Name: "tofu/aws-trivy/module", Version: 12}, "tofu-aws-trivy-module@v12"},
+		{TypeRef{Name: "rust/cargo/cli-tool", Version: 3}, "rust-cargo-cli-tool@v3"},
+	} {
+		if got := FlatName(tt.ref); got != tt.want {
+			t.Errorf("FlatName(%v) = %q, want %q", tt.ref, got, tt.want)
+		}
+	}
+}

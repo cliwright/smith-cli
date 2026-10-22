@@ -108,6 +108,26 @@ type Plan struct {
 // Order exposes the plan's nodes in execution order (prerequisites first).
 func (p *Plan) Order() []Node { return p.order }
 
+// TypeRefs returns the sorted, deduplicated union of the canonical
+// "name@version" refs of every type the plan resolved across all its
+// projects — roots and dependency-closure projects alike. It exists for
+// the cli's trust gate, which checks one marker per ref; targetrun itself
+// stays free of trust policy.
+func (p *Plan) TypeRefs() []string {
+	seen := map[string]bool{}
+	for _, rt := range p.resolved {
+		for ref := range rt.Dirs {
+			seen[ref] = true
+		}
+	}
+	refs := make([]string, 0, len(seen))
+	for ref := range seen {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs
+}
+
 // ReservedTemplateVars are the smith-computed template variables available
 // in the rendering pipeline: uppercase keys, collision-free with params by
 // construction (the param key pattern is lowercase-only). SMITH_TARGET,

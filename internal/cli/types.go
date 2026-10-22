@@ -18,6 +18,7 @@ import (
 	"github.com/cliwright/smith/internal/ingot"
 	"github.com/cliwright/smith/internal/lock"
 	"github.com/cliwright/smith/internal/projecttype"
+	"github.com/cliwright/smith/internal/trust"
 	"github.com/cliwright/smith/internal/typeref"
 )
 
@@ -33,11 +34,12 @@ func newTypesCmd() *cobra.Command {
 builds without a sync step). Requires a Smith repository.
 
 With no arguments, lists every installed type, sorted by name then version,
-each annotated with its lock status from .smith/lock.json: pinned,
-not pinned, or hash mismatch — run smith sync. With a name, lists every
-installed version of that type; with name@version, prints the full
-definition: description, capabilities, tools, working_dir, params,
-environment, targets, and target depends_on.`,
+each annotated with its lock status from .smith/lock.json (pinned,
+not pinned, or hash mismatch — run smith sync) and its trust status from
+.smith/trust/ (trusted, untrusted, or stale — see "smith trust"). With a
+name, lists every installed version of that type; with name@version, prints
+the full definition: description, capabilities, tools, working_dir, params,
+environment, targets, target depends_on, and both statuses.`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,23 +98,34 @@ func runTypes(cmd *cobra.Command, args []string) error {
 	status := func(it installedType) string {
 		return lockStatus(repoLock, it.ref, it.hash)
 	}
+	// Trust annotates next to custody: the marker must match the installed
+	// ingot, independent of what the lock pins.
+	trustStatus := func(it installedType) string {
+		status, _, err := trust.Check(repoRoot, it.ref, it.hash)
+		if err != nil {
+			return "unverifiable"
+		}
+		return status.String()
+	}
+	annotation := func(it installedType) string {
+		return "  [" + status(it) + ", " + trustStatus(it) + "]"
+	}
+	if trust.Bypassed() {
+		fmt.Fprintln(out, "SMITH_AUTO_TRUST=1 — trust model bypassed")
+	}
 
 	if len(args) == 0 {
 		for _, it := range installed {
-			annotation := ""
-			if s := status(it); s != "" {
-				annotation = "  [" + s + "]"
-			}
-			fmt.Fprintf(out, "%s  %s%s\n", it.ref, it.pt.Description, annotation)
+			fmt.Fprintf(out, "%s  %s%s\n", it.ref, it.pt.Description, annotation(it))
 		}
 		return nil
 	}
 
 	arg := args[0]
 	if strings.Contains(arg, "@") {
-		return showTypeDetail(out, installed, arg, status)
+		return showTypeDetail(out, installed, arg, status, trustStatus)
 	}
-	return showTypeVersions(out, installed, arg, status)
+	return showTypeVersions(out, installed, arg, annotation)
 }
 
 // scanInstalledTypes walks .smith/types, loading every installed type: a
@@ -211,16 +224,12 @@ func showTypeVersions(out io.Writer, installed []installedType, name string, sta
 		return fmt.Errorf("type %q is not installed (installed: %s)", name, strings.Join(installedNames(installed), ", "))
 	}
 	for _, it := range versions {
-		annotation := ""
-		if s := status(it); s != "" {
-			annotation = "  [" + s + "]"
-		}
-		fmt.Fprintf(out, "%d  %s%s\n", it.ref.Version, it.pt.Description, annotation)
+		fmt.Fprintf(out, "%d  %s%s\n", it.ref.Version, it.pt.Description, status(it))
 	}
 	return nil
 }
 
-func showTypeDetail(out io.Writer, installed []installedType, arg string, status func(installedType) string) error {
+func showTypeDetail(out io.Writer, installed []installedType, arg string, status, trustStatus func(installedType) string) error {
 	ref, err := typeref.Parse(arg)
 	if err != nil {
 		return err
@@ -289,6 +298,7 @@ func showTypeDetail(out io.Writer, installed []installedType, arg string, status
 	if s := status(*found); s != "" {
 		fmt.Fprintf(out, "  status: %s\n", s)
 	}
+	fmt.Fprintf(out, "  trust: %s\n", trustStatus(*found))
 	return nil
 }
 

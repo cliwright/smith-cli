@@ -91,6 +91,43 @@ target and say so at the end:
 ran 3, skipped 1 (type has no 'lint' target)
 ```
 
+## Trust: vetting what runs
+
+Smith installs executable code — a type's steps run as shell commands on
+your machine — so running is gated on trust. Installed types are untrusted
+by default:
+
+```text
+$ smith shop-api build
+smith: refusing to run: 1 type(s) not trusted:
+  python/astral/lib@1  (untrusted — installed from registry "types" via github)
+inspect: smith <ns> <name> help   trust: smith trust <ref>   (or smith trust --all)
+```
+
+The gate runs before anything executes and covers every run form — one
+project, a namespace, the whole repo, attachments, services, and
+dependency projects pulled in through the closure. Inspect what installed,
+vet it, then trust it:
+
+```sh
+smith types python/astral/lib@1   # exactly what would run
+smith trust python/astral/lib@1   # the "I vetted this code" act
+```
+
+Trusting records the ingot's hash, your username, and a timestamp in a
+marker under `.smith/trust/` — per-user, fenced out of git by a `.gitignore`
+block smith maintains. Trust is bound to the content: a later re-sync that
+lands different bytes (publisher churn, another source) turns the marker
+`stale` and re-triggers the gate, because trust means "I vetted *this*
+code", not a name. Types fetched from a local `path` registry are trusted
+automatically at install time; remote git sources are never auto-trusted.
+
+`SMITH_AUTO_TRUST=1` bypasses the gate — the CI escape hatch, set it in the
+workflow environment rather than a shell profile. Inspection never blocks
+on trust: `smith trust` lists statuses, `smith types` annotates them,
+`smith doctor` reports them as findings, and `tree` / `list` / `help` /
+`--context` stay usable on an untrusted repo — looking is part of deciding.
+
 ## Passing arguments: `--`
 
 Everything after a standalone `--` is captured verbatim and handed to the

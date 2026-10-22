@@ -19,9 +19,30 @@
 | `smith list` | Print the declared namespaces (project roots) plus the reserved `repo`. |
 | `smith tree` | Print the discovered repo: roots, projects, type refs, dependencies. |
 | `smith tree --show-deps` | Add a `Dependencies:` section with one line per `depends_on` entry. |
-| `smith types` | List installed types with lock status (`pinned`, `not pinned`, `hash mismatch — run smith sync`). |
+| `smith types` | List installed types with lock and trust status: `[pinned / not pinned / hash mismatch — run smith sync, trusted / untrusted / stale]`. |
 | `smith types <name>` | List the installed versions of one type. |
-| `smith types <name>@<version>` | Full detail: description, tools, params, environment, targets, depends_on, status. |
+| `smith types <name>@<version>` | Full detail: description, tools, params, environment, targets, depends_on, status, trust. |
+
+## Trust
+
+| Command | What it does |
+|---|---|
+| `smith trust` | List installed types and their trust status: `trusted (by <user> at <time>)`, `untrusted`, or `stale — content changed`. |
+| `smith trust <name>@<version>` | Trust one installed type — the explicit "I vetted this code" act. Refused when the installed copy fails the custody check; run `smith sync` first. |
+| `smith trust --all` | Trust every installed type whose custody holds; broken installs are skipped with a warning. |
+
+Installed types are untrusted by default, and a run that resolves an
+untrusted or stale type refuses to start — before anything executes —
+naming the types and pointing at `smith trust`. `smith sync` auto-trusts
+types fetched from a local `path` registry (they came from your own disk);
+remote git sources are never auto-trusted. Trust lives in per-user markers
+under `.smith/trust/` (kept out of git by a fenced `.gitignore` block) and
+is bound to the content's hash: a re-sync that lands different bytes turns
+the marker stale and re-triggers the gate. `SMITH_AUTO_TRUST=1` bypasses
+the gate — the CI escape hatch; set it in the workflow environment, not a
+shell profile. Inspection never blocks on trust: `smith trust` lists
+statuses, `smith types` annotates them, `smith doctor` reports them, and
+`tree` / `list` / `help` / `--context` stay usable on an untrusted repo.
 
 ## Running
 
