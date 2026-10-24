@@ -42,11 +42,19 @@ untrusted or stale type is a finding too (see "smith trust").
 SMITH_AUTO_TRUST=1 is reported when active — it bypasses the trust model.
 
 Exits non-zero when anything is missing or any finding was reported.`,
-		Args:          cobra.NoArgs,
-		SilenceUsage:  true,
-		SilenceErrors: true, // findings are the output; errUnhealthy only sets the exit code
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		// SilenceErrors keeps cobra from printing an "Error:" line for
+		// errUnhealthy — the findings themselves are the output, on stdout.
+		// Operational failures (the repo won't even load) must not vanish
+		// with it, so RunE prints those itself.
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDoctor(cmd)
+			err := runDoctor(cmd)
+			if err != nil && !errors.Is(err, errUnhealthy) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+			}
+			return err
 		},
 	}
 }

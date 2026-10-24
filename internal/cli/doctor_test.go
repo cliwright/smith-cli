@@ -253,3 +253,26 @@ func TestDoctorBypassNote(t *testing.T) {
 		t.Errorf("bypassed doctor must stay healthy and skip trust findings:\n%s", out)
 	}
 }
+
+// TestDoctorPrintsLoadErrors covers the failure the trust model made visible
+// in the wild: a repo whose discovery fails (here: a placeholder type ref
+// that violates the manifest schema) left doctor exiting non-zero with NO
+// output — SilenceErrors swallowed the operational error along with
+// errUnhealthy. Operational errors must print; only findings stay silent.
+func TestDoctorPrintsLoadErrors(t *testing.T) {
+	repo := buildMockRepo(t, []string{"images"}, map[string][2]string{
+		"images/ingot": {"ingot", "missing/absent"},
+	})
+	t.Chdir(repo)
+
+	out, err := run(t, "doctor")
+	if err == nil {
+		t.Fatalf("doctor succeeded on an unloadable repo:\n%s", out)
+	}
+	if errors.Is(err, errUnhealthy) {
+		t.Fatalf("load failure must not masquerade as findings: %v", err)
+	}
+	if !strings.Contains(out, "Error: ") || !strings.Contains(out, "images/ingot/smith.yml") {
+		t.Errorf("operational error must be printed, got:\n%s", out)
+	}
+}
