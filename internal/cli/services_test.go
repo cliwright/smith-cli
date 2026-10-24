@@ -268,14 +268,18 @@ func TestServicesGraphDetectsProjectLevelCycle(t *testing.T) {
 	})
 	t.Chdir(repo)
 
-	_, err := run(t, "services", "cyc", "graph")
-	if err == nil || !strings.Contains(err.Error(), `service "cyc" has a dependency cycle: cyc-a -> cyc-b -> cyc-a`) {
-		t.Fatalf("bare graph error = %v, want project-level cycle", err)
-	}
-
-	_, err = run(t, "services", "cyc", "graph", "build")
-	if err == nil || !strings.Contains(err.Error(), "dependency cycle: cyc-a:build -> cyc-b:build -> cyc-a:build") {
-		t.Fatalf("target graph error = %v, want target-level cycle from the closure build", err)
+	// Project-level cycles are rejected at discovery, before any command
+	// runs — every services surface fails with the same discovery error.
+	want := `libs/cyc-b/smith.yml: dependency cycle: cyc-a -> cyc-b -> cyc-a`
+	for _, args := range [][]string{
+		{"services", "cyc"},
+		{"services", "cyc", "graph"},
+		{"services", "cyc", "build"},
+	} {
+		_, err := run(t, args...)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%v error = %v, want the discovery-time cycle error %q", args, err, want)
+		}
 	}
 }
 

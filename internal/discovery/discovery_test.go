@@ -233,6 +233,59 @@ func TestFindProjects(t *testing.T) {
 			},
 			wantErr: `libs/spam/smith.yml: project "spam" must not depend on itself`,
 		},
+		{
+			name:  "two project dependency cycle is rejected",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-a"), "cyc-a", "python/astral/lib@1", "cyc-b")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-b"), "cyc-b", "python/astral/lib@1", "cyc-a")
+			},
+			wantErr: "libs/cyc-b/smith.yml: dependency cycle: cyc-a -> cyc-b -> cyc-a",
+		},
+		{
+			name:  "three project dependency cycle is rejected",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-a"), "cyc-a", "python/astral/lib@1", "cyc-b")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-b"), "cyc-b", "python/astral/lib@1", "cyc-c")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-c"), "cyc-c", "python/astral/lib@1", "cyc-a")
+			},
+			// The closing edge (cyc-c -> cyc-a) belongs to cyc-c.
+			wantErr: "libs/cyc-c/smith.yml: dependency cycle: cyc-a -> cyc-b -> cyc-c -> cyc-a",
+		},
+		{
+			name:  "first cycle reported is deterministic",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				// Two disjoint cycles; the sorted walk reports the one
+				// starting at the alphabetically first project.
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-b"), "cyc-b", "python/astral/lib@1", "cyc-a")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-a"), "cyc-a", "python/astral/lib@1", "cyc-b")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-d"), "cyc-d", "python/astral/lib@1", "cyc-c")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "cyc-c"), "cyc-c", "python/astral/lib@1", "cyc-d")
+			},
+			wantErr: "libs/cyc-b/smith.yml: dependency cycle: cyc-a -> cyc-b -> cyc-a",
+		},
+		{
+			name:  "diamond is not a cycle",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "base"), "base", "python/astral/lib@1")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "left"), "left", "python/astral/lib@1", "base")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "right"), "right", "python/astral/lib@1", "base")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "top"), "top", "python/astral/lib@1", "left", "right")
+			},
+			want: []string{"libs/base", "libs/left", "libs/right", "libs/top"},
+		},
+		{
+			name:  "duplicate dependency entries are not a cycle",
+			roots: []string{"libs"},
+			setup: func(t *testing.T, repo string) {
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "ham"), "ham", "python/astral/lib@1")
+				writeManifestWithDeps(t, filepath.Join(repo, "libs", "spam"), "spam", "python/astral/lib@1", "ham", "ham")
+			},
+			want: []string{"libs/ham", "libs/spam"},
+		},
 	}
 
 	for _, tt := range tests {

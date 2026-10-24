@@ -91,6 +91,51 @@ target and say so at the end:
 ran 3, skipped 1 (type has no 'lint' target)
 ```
 
+## Impact: verifying a change downstream
+
+`depends_on` answers "what must run before me?" — the run closure handles
+that. `impact` answers the reverse question: "I changed this project — what
+cares?"
+
+```sh
+smith oranges impact         # print transitive dependents, seed first
+smith oranges impact test    # run test over the whole downstream line
+```
+
+The print form lists the seed plus everything that transitively depends on
+it, one name per line, dependency-first (the seed first, each dependent
+after everything it depends on). It loads no types, so it works even in a
+repo with nothing installed.
+
+The run form builds ONE ordinary plan whose roots are the closure members
+whose types declare the target — the seed runs first, prerequisites are
+pulled in by the usual closure, members without the target are skipped and
+reported:
+
+```text
+ran 3, skipped 1 (type has no 'test' target) downstream of "oranges"
+```
+
+Everything a normal run gives you applies unchanged: the trust gate, the
+environment, fail-fast. If nothing downstream declares the target:
+
+```text
+no project downstream of "oranges" declares target "test"
+```
+
+`impact` is a reserved word in the target position, like `list` and `help`:
+a project's own target literally named `impact` is shadowed by
+`smith oranges impact` (same rule as `list`/`help`), and bare
+`smith libs impact` still runs an `impact` target across the namespace
+(TARGET WINS). `smith oranges impact help` runs a target literally named
+`help` — help for a target named `impact` is the one form the reservation
+costs you.
+
+This is verification, not release: the human decides what "safe" means —
+usually the dependent's `test`, sometimes `plan` — and a `release` flow, if
+one ever lands, composes as a convention (`impact release`) with no new
+machinery.
+
 ## Trust: vetting what runs
 
 Smith installs executable code — a type's steps run as shell commands on

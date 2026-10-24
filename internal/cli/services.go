@@ -23,15 +23,16 @@ const servicesRootName = "services"
 //	smith services                       list services (same as "services list")
 //	smith services list                  list services
 //	smith services <name>                show components and implemented targets
-//	smith services <name> graph          component dependency view (cycle-checked)
+//	smith services <name> graph          component dependency view
 //	smith services <name> graph <target> print the target's execution order, run nothing
 //	smith services <name> <target>       run target across the implementing components
 //
 // A service run resolves which components implement the target (mapping
 // first, name match as fallback) and feeds those (project, target) pairs as
 // roots into the ordinary targetrun closure — ordering comes from
-// project-level depends_on, cycles and dangling targets are hard errors, and
-// components without the target are skipped and reported.
+// project-level depends_on (cycles are rejected at discovery, before any
+// command runs), dangling targets are hard errors, and components without
+// the target are skipped and reported.
 func (rc *repoContext) dispatchServices(cmd *cobra.Command, rest []string) error {
 	out := stdout(cmd)
 
@@ -285,17 +286,14 @@ func componentTargetsDisplay(rt *targetrun.Resolved, c service.Component) []stri
 
 // graphService prints the component dependency view: each component with
 // the projects that must come before it (its manifest depends_on), marking
-// dependencies outside the service as external. The reachable project-level
-// dependency graph is cycle-checked — a cycle would break any run that
-// touches it, so it is reported here instead of as a mid-run surprise.
+// dependencies outside the service as external. Project-level cycles are
+// rejected at discovery, before any command runs, so no check is needed
+// here; target-level cycles are caught per plan by targetrun.Build.
 func (rc *repoContext) graphService(cmd *cobra.Command, svc *service.Service) error {
 	out := stdout(cmd)
 	inService := map[string]bool{}
 	for _, c := range svc.Components {
 		inService[c.Project] = true
-	}
-	if err := rc.checkServiceCycles(svc); err != nil {
-		return err
 	}
 	fmt.Fprintf(out, "service %s — component dependency graph\n\n", svc.Name)
 	for _, c := range svc.Components {
@@ -317,57 +315,6 @@ func (rc *repoContext) graphService(cmd *cobra.Command, svc *service.Service) er
 			continue
 		}
 		fmt.Fprintf(out, "  after: %s\n", strings.Join(deps, ", "))
-	}
-	return nil
-}
-
-// checkServiceCycles runs a DFS over the manifest depends_on graph reachable
-// from the service's components and reports the first cycle found,
-// erroring with the project path (no targets — this is the project-level
-// view; target-level cycles are caught per plan by targetrun.Build).
-func (rc *repoContext) checkServiceCycles(svc *service.Service) error {
-	const (
-		white = iota
-		grey
-		black
-	)
-	color := map[string]int{}
-	var stack []string
-	var visit func(name string) error
-	visit = func(name string) error {
-		switch color[name] {
-		case black:
-			return nil
-		case grey:
-			start := 0
-			for i, s := range stack {
-				if s == name {
-					start = i
-					break
-				}
-			}
-			cycle := append(append([]string{}, stack[start:]...), name)
-			return fmt.Errorf("service %q has a dependency cycle: %s", svc.Name, strings.Join(cycle, " -> "))
-		}
-		color[name] = grey
-		stack = append(stack, name)
-		p, ok := projectByName(rc.projects, name)
-		if !ok {
-			return fmt.Errorf("service %q lists unknown component %q", svc.Name, name)
-		}
-		for _, d := range p.Manifest.DependsOn {
-			if err := visit(d.Project); err != nil {
-				return err
-			}
-		}
-		stack = stack[:len(stack)-1]
-		color[name] = black
-		return nil
-	}
-	for _, c := range svc.Components {
-		if err := visit(c.Project); err != nil {
-			return err
-		}
 	}
 	return nil
 }

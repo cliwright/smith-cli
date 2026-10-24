@@ -56,6 +56,8 @@ All run commands accept `--env <name>` and `--context`.
 | `smith <ns> <target>` | Run a target on every project in the namespace that declares it; others are skipped and reported. |
 | `smith <target>` | Run a target repo-wide, in dependency order. |
 | `smith <name> <target> -- <args…>` | Pass everything after `--` to the steps as `$SMITH_CLI_ARGS` (also `{{.SMITH_CLI_ARGS}}`). |
+| `smith <name> impact` | Print the project's transitive dependents, one per line, dependency-first (seed first). Pure graph inspection — works with nothing installed. |
+| `smith <name> impact <target>` | Run `<target>` over the downstream closure as one plan: seed first, closure members without the target skipped and reported (`ran 3, skipped 1 … downstream of "oranges"`); the trust gate and fail-fast apply. `impact` is reserved, like `list`/`help`. |
 | `smith repo` / `smith repo list` | List attachment aliases. |
 | `smith repo <alias> <target>` | Run an attachment (repo-level target). |
 | `smith services` / `smith services list` | List service definitions. |
@@ -78,7 +80,7 @@ All run commands accept `--env <name>` and `--context`.
 - All output goes to stdout; runs are serial and fail-fast.
 - Errors describe themselves and suggest the fix (`smith list`, `smith
   sync`); Smith never dumps a usage tree for runtime errors.
-- Reserved words: `repo`, `services` (namespaces), `list`, `help`
+- Reserved words: `repo`, `services` (namespaces), `list`, `help`, `impact`
   (grammar positions), `graph` (inside `services <name>`). Command names
   beat same-named projects.
 - Exact matches only; no fuzzy guessing.

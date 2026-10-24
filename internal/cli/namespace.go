@@ -473,6 +473,8 @@ func (rc *repoContext) dispatchPositional(cmd *cobra.Command, args []string) err
 //	smith <ns> <name>          TARGET WINS: run <name> on every project in the ns
 //	smith <ns> <name> list     list that project's targets
 //	smith <ns> <name> help     type help (help/project.md + vars/env summary)
+//	smith <ns> <name> impact   print the downstream closure, seed first
+//	smith <ns> <name> impact <target>  run target over the downstream closure
 //	smith <ns> <name> <target> run target on that project
 //	smith <ns> <name> <target> help  target help (help/<target>.md + rendered steps)
 //	smith <ns> <target>        run target on every project in the ns that declares it
@@ -508,6 +510,13 @@ func (rc *repoContext) dispatchNamespace(cmd *cobra.Command, ns string, rest []s
 	}
 
 	if len(rest) > 2 {
+		if len(rest) == 3 && rest[1] == "impact" {
+			if !isProject {
+				return unknownProjectError(ns, name, nsProjects)
+			}
+			p, _ := projectByName(nsProjects, name)
+			return rc.runImpact(cmd, p, rest[2])
+		}
 		if len(rest) == 3 && rest[2] == "help" {
 			if !isProject {
 				return unknownProjectError(ns, name, nsProjects)
@@ -534,6 +543,16 @@ func (rc *repoContext) dispatchNamespace(cmd *cobra.Command, ns string, rest []s
 		}
 		p, _ := projectByName(nsProjects, name)
 		return rc.showTypeHelp(cmd, p)
+	}
+
+	if rest[1] == "impact" {
+		// `impact` is reserved: it shadows a target (or project) literally
+		// named "impact".
+		if !isProject {
+			return unknownProjectError(ns, name, nsProjects)
+		}
+		p, _ := projectByName(nsProjects, name)
+		return rc.printImpact(cmd, p)
 	}
 
 	if !isProject {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/cliwright/smith/internal/config"
 	"github.com/cliwright/smith/internal/manifest"
@@ -135,15 +136,25 @@ func FindProjects(repoRoot string, cfg *config.RepoConfig) ([]Project, error) {
 }
 
 // validateDependencies checks every project's depends_on entries against the
-// discovered projects: no dangling references, no self-dependencies. projects
-// must be sorted so the first error reported is deterministic.
+// discovered projects: no dangling references, no self-dependencies, and no
+// dependency cycles — the repo's graph is acyclic by load, so every command
+// (and the impact query's reverse traversal) can rely on it. projects must
+// be sorted so the first error reported is deterministic.
 func validateDependencies(projects []Project) error {
 	names := make(map[string]bool, len(projects))
 	for _, p := range projects {
 		names[p.Manifest.Name] = true
 	}
+	// deps is the project-level graph for the cycle check: project -> the
+	// projects it depends on, deduped and sorted so the reported cycle is
+	// deterministic.
+	deps := make(map[string][]string, len(projects))
+	paths := make(map[string]string, len(projects))
 	for _, p := range projects {
 		manifestPath := filepath.ToSlash(filepath.Join(p.Dir, "smith.yml"))
+		paths[p.Manifest.Name] = manifestPath
+		var list []string
+		seen := map[string]bool{}
 		for _, dep := range p.Manifest.DependsOn {
 			if dep.Project == p.Manifest.Name {
 				return fmt.Errorf("%s: project %q must not depend on itself", manifestPath, p.Manifest.Name)
@@ -151,7 +162,67 @@ func validateDependencies(projects []Project) error {
 			if !names[dep.Project] {
 				return fmt.Errorf("%s: dependency %q does not match any project in this repository", manifestPath, dep.Project)
 			}
+			if !seen[dep.Project] {
+				seen[dep.Project] = true
+				list = append(list, dep.Project)
+			}
 		}
+		sort.Strings(list)
+		deps[p.Manifest.Name] = list
+	}
+	if owner, cycle := findDependencyCycle(projects, deps); owner != "" {
+		return fmt.Errorf("%s: dependency cycle: %s", paths[owner], strings.Join(cycle, " -> "))
 	}
 	return nil
+}
+
+// findDependencyCycle runs a white/grey/black depth-first search over the
+// project-level depends_on graph and reports the first cycle found: the
+// project whose edge closes the loop (for the error's manifest path) and
+// the cycle path itself ("a -> b -> a"). Projects are visited in sorted
+// order with sorted dependency lists, so the reported cycle is
+// deterministic. A nil cycle means the graph is acyclic.
+func findDependencyCycle(projects []Project, deps map[string][]string) (owner string, cycle []string) {
+	const (
+		white = iota
+		grey
+		black
+	)
+	color := map[string]int{}
+	var stack []string
+	var visit func(name string) bool
+	visit = func(name string) bool {
+		color[name] = grey
+		stack = append(stack, name)
+		for _, dep := range deps[name] {
+			switch color[dep] {
+			case grey:
+				start := 0
+				for i, s := range stack {
+					if s == dep {
+						start = i
+						break
+					}
+				}
+				owner = name
+				cycle = append(append([]string{}, stack[start:]...), dep)
+				return true
+			case white:
+				if visit(dep) {
+					return true
+				}
+			}
+		}
+		stack = stack[:len(stack)-1]
+		color[name] = black
+		return false
+	}
+	for _, p := range projects {
+		if color[p.Manifest.Name] == white {
+			if visit(p.Manifest.Name) {
+				return owner, cycle
+			}
+		}
+	}
+	return "", nil
 }
